@@ -104,8 +104,22 @@ test("blocks shell functions named gh", () => {
 	);
 });
 
+test("blocks shell functions that hide gh behind another name", () => {
+	assertAmbiguous(
+		"foo() { gh issue comment 1 --body x; }; foo",
+		"function",
+	);
+});
+
 test("blocks alias-style gh setup", () => {
 	assertAmbiguous("alias gh=echo; gh issue view 1", "alias");
+});
+
+test("blocks alias setup that hides gh behind another name", () => {
+	assertAmbiguous(
+		'alias foo="gh issue comment 1 --body x"; foo',
+		"alias",
+	);
 });
 
 test("blocks heredoc stdin attached to gh", () => {

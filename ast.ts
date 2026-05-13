@@ -507,7 +507,7 @@ function collectNestedScriptsFromSimpleCommand(
 	}
 }
 
-function hasGhAliasSetup(
+function hasAliasSetup(
 	commandName: string,
 	args: WordToken[],
 ): boolean {
@@ -515,7 +515,7 @@ function hasGhAliasSetup(
 		return false;
 	}
 
-	return args.some((arg) => arg.literal && /^gh(?:=|$)/.test(arg.text));
+	return args.some((arg) => !arg.literal || arg.text.includes("="));
 }
 
 function hasOpaqueStdinRedirection(
@@ -636,8 +636,8 @@ function visitSimpleCommand(
 	}
 
 	const args = wordsToTokens(node.args);
-	if (hasGhAliasSetup(commandName.text, args)) {
-		state.ambiguous = ambiguous("alias setup for gh is not reviewable");
+	if (hasAliasSetup(commandName.text, args)) {
+		state.ambiguous = ambiguous("alias setup is not reviewable");
 		return;
 	}
 
@@ -711,11 +711,9 @@ function visitCommandNode(
 	}
 
 	if (node.type === "FunctionDef") {
-		if (node.name === "gh") {
-			state.ambiguous = ambiguous(
-				"shell function named gh is not reviewable",
-			);
-		}
+		state.ambiguous = ambiguous(
+			"shell function definitions are not reviewable",
+		);
 		return;
 	}
 
