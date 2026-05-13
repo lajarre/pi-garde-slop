@@ -49,6 +49,13 @@ type ToolCallHandler = (
 	ctx: ExtensionContext,
 ) => ToolCallResult | Promise<ToolCallResult>;
 
+export function bashToolCall(command: string): ToolCallEvent {
+	return {
+		toolName: "bash",
+		input: { command },
+	};
+}
+
 function formatArgs(args: string[]): string {
 	return args.length > 0 ? ` ${args.join(" ")}` : "";
 }
