@@ -339,6 +339,13 @@ test("blocks parser unavailable for shell scripts from opaque stdin", () => {
 			"echo ok\nbash <<< opaque",
 			"echo ok\nbash <<'EOF'\necho opaque\nEOF",
 			"false || bash < payload.txt",
+			"cat payload.txt | (bash)",
+			"cat payload.txt | { bash; }",
+			"env -S bash < payload.txt",
+			"env --split-string=bash < payload.txt",
+			"0< payload.txt bash",
+			"0<&0 bash",
+			"<<'EOF' bash\necho opaque\nEOF",
 		]) {
 			assertAmbiguous(command, "parser unavailable");
 		}
@@ -399,6 +406,13 @@ test("blocks parser failures for shell scripts from opaque stdin", () => {
 			"echo ok\nbash <<< opaque",
 			"echo ok\nbash <<'EOF'\necho opaque\nEOF",
 			"false || bash < payload.txt",
+			"cat payload.txt | (bash)",
+			"cat payload.txt | { bash; }",
+			"env -S bash < payload.txt",
+			"env --split-string=bash < payload.txt",
+			"0< payload.txt bash",
+			"0<&0 bash",
+			"<<'EOF' bash\necho opaque\nEOF",
 		]) {
 			assertAmbiguous(command, "parse");
 		}

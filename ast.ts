@@ -299,7 +299,7 @@ function shellSyntaxOnly(command: string): string {
 
 	for (const char of command) {
 		if (escaped) {
-			view += inSingleQuotes ? char : " ";
+			view += inSingleQuotes ? quotedSyntaxPlaceholder(char) : " ";
 			escaped = false;
 			continue;
 		}
@@ -322,10 +322,17 @@ function shellSyntaxOnly(command: string): string {
 			continue;
 		}
 
-		view += inSingleQuotes || inDoubleQuotes ? " " : char;
+		view +=
+			inSingleQuotes || inDoubleQuotes
+				? quotedSyntaxPlaceholder(char)
+				: char;
 	}
 
 	return view;
+}
+
+function quotedSyntaxPlaceholder(char: string): string {
+	return /\s/.test(char) ? " " : "q";
 }
 
 const fallbackControlTokens = new Set([
@@ -381,6 +388,32 @@ function fallbackSyntaxTokens(command: string): string[] {
 			tokens.push(char);
 			index += 1;
 			continue;
+		}
+
+		if (/\d/.test(char)) {
+			const digitStart = index;
+			while (/\d/.test(view[index] ?? "")) {
+				index += 1;
+			}
+			if ((view[index] ?? "") === "<" || (view[index] ?? "") === ">") {
+				const redirectStart = index;
+				const redirectPair = view.slice(index, index + 2);
+				const redirectTriple = view.slice(index, index + 3);
+				if (redirectTriple === "<<<") {
+					tokens.push(redirectTriple);
+					index += 3;
+					continue;
+				}
+				if (["<<", "<&", ">>"].includes(redirectPair)) {
+					tokens.push(redirectPair);
+					index += 2;
+					continue;
+				}
+				tokens.push(view[redirectStart] ?? "");
+				index += 1;
+				continue;
+			}
+			index = digitStart;
 		}
 
 		let word = "";
@@ -534,10 +567,46 @@ function fallbackSegmentHasStdinRedirection(tokens: string[]): boolean {
 	return tokens.some((token) => stdinRedirectionTokens.has(token));
 }
 
+function fallbackSegmentHasEnvSplitString(tokens: string[]): boolean {
+	const words = removeFallbackRedirections(tokens);
+
+	for (let index = 0; index < words.length; index += 1) {
+		const baseName = commandBaseName(words[index] ?? "");
+		if (baseName !== "env") {
+			continue;
+		}
+
+		for (const word of words.slice(index + 1)) {
+			if (word === "--") {
+				break;
+			}
+			if (
+				word === "-S" ||
+				word === "--split-string" ||
+				word.startsWith("--split-string=")
+			) {
+				return true;
+			}
+			if (
+				!word.startsWith("-") &&
+				!isAssignmentToken({ text: word, literal: true })
+			) {
+				break;
+			}
+		}
+	}
+
+	return false;
+}
+
 function fallbackSegmentHasOpaqueShellStdin(
 	tokens: string[],
 	inheritedPipelineStdin: boolean,
 ): boolean {
+	if (fallbackSegmentHasEnvSplitString(tokens)) {
+		return true;
+	}
+
 	const command = fallbackEffectiveCommandWord(tokens);
 	const baseName = command ? commandBaseName(command) : "";
 
@@ -551,6 +620,7 @@ function fallbackSegmentHasOpaqueShellStdin(
 function shellExecutableReadsOpaqueStdin(command: string): boolean {
 	let segment: string[] = [];
 	let inheritedPipelineStdin = false;
+	let pipelineStdinDepth = 0;
 
 	const flushSegment = (): boolean => {
 		const isOpaqueShellStdin = fallbackSegmentHasOpaqueShellStdin(
@@ -570,11 +640,33 @@ function shellExecutableReadsOpaqueStdin(command: string): boolean {
 			continue;
 		}
 
+		if (token === "(" || token === "{") {
+			if (inheritedPipelineStdin) {
+				pipelineStdinDepth += 1;
+			}
+			continue;
+		}
+
+		if (token === ")" || token === "}") {
+			if (flushSegment()) {
+				return true;
+			}
+			if (pipelineStdinDepth > 0) {
+				pipelineStdinDepth -= 1;
+			}
+			if (pipelineStdinDepth === 0) {
+				inheritedPipelineStdin = false;
+			}
+			continue;
+		}
+
 		if (fallbackControlTokens.has(token)) {
 			if (flushSegment()) {
 				return true;
 			}
-			inheritedPipelineStdin = false;
+			if (pipelineStdinDepth === 0) {
+				inheritedPipelineStdin = false;
+			}
 			continue;
 		}
 
