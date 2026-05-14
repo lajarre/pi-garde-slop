@@ -145,9 +145,14 @@ function containsShellLiteralGhCommandWord(command: string): boolean {
 	return flushWord();
 }
 
+function normalizeLineContinuations(command: string): string {
+	return command.replace(/\\\r?\n/g, "");
+}
+
 function riskyWhenParserUnavailable(command: string): boolean {
+	const lineContinuedCommand = normalizeLineContinuations(command);
 	return (
-		containsShellLiteralGhCommandWord(command) ||
+		containsShellLiteralGhCommandWord(lineContinuedCommand) ||
 		/[$`]|\b(alias|function|eval|source)\b/.test(command) ||
 		/(^|[;&|()\s])\.(?=([;&|()\s]|$))/.test(command)
 	);
@@ -496,6 +501,25 @@ function unwrapExec(args: WordToken[]): UnwrappedCommand | null {
 	};
 }
 
+function commandWrapperIsQueryMode(args: WordToken[]): boolean {
+	for (const arg of args) {
+		if (!arg.literal) {
+			return false;
+		}
+		if (arg.text === "--") {
+			return false;
+		}
+		if (!arg.text.startsWith("-") || arg.text === "-") {
+			return false;
+		}
+		if (!arg.text.startsWith("--") && /[vV]/.test(arg.text.slice(1))) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
 function unwrapLayer(
 	command: WordToken,
 	args: WordToken[],
@@ -506,9 +530,12 @@ function unwrapLayer(
 
 	switch (commandBaseName(command.text)) {
 		case "builtin":
-		case "command":
 		case "nohup":
 			return unwrapSimpleWrapper(args);
+		case "command":
+			return commandWrapperIsQueryMode(args)
+				? null
+				: unwrapSimpleWrapper(args);
 		case "env":
 			return unwrapEnv(args);
 		case "exec":

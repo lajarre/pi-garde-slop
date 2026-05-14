@@ -275,6 +275,7 @@ test("blocks parser unavailable for literal-hidden gh command words", () => {
 			"g''h issue comment 1 --body x",
 			'g""h issue comment 1 --body x',
 			"g\\h issue comment 1 --body x",
+			"g\\\nh issue comment 1 --body x",
 		]) {
 			assertAmbiguous(command, "parser unavailable");
 		}
@@ -292,11 +293,18 @@ test("blocks parser failures for literal-hidden gh command words", () => {
 			"g''h issue comment 1 --body x",
 			'g""h issue comment 1 --body x',
 			"g\\h issue comment 1 --body x",
+			"g\\\nh issue comment 1 --body x",
 		]) {
 			assertAmbiguous(command, "parse");
 		}
 	} finally {
 		setParseBashForTest(undefined);
+	}
+});
+
+test("does not treat command query modes as gh execution", () => {
+	for (const command of ["command -v gh", "command -V gh"]) {
+		assertReviewable(command, []);
 	}
 });
 
