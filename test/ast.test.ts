@@ -129,9 +129,23 @@ test("blocks gh hidden inside arithmetic expansion substitution", () => {
 	);
 });
 
+test("blocks escaped gh inside arithmetic expansion substitution", () => {
+	assertAmbiguous(
+		"echo $(( $(g\\h issue comment 1 --body x) + 1 ))",
+		"arithmetic expansion",
+	);
+});
+
 test("blocks gh hidden inside parameter expansion substitution", () => {
 	const command =
 		"echo " + "$" + "{x:-" + "$" + "(gh issue comment 1 --body x)}";
+
+	assertAmbiguous(command, "parameter expansion");
+});
+
+test("blocks quoted gh inside parameter expansion substitution", () => {
+	const command =
+		"echo " + "$" + "{x:-" + "$" + "(g''h issue comment 1 --body x)}";
 
 	assertAmbiguous(command, "parameter expansion");
 });
@@ -197,6 +211,17 @@ test("blocks shell -c commands that can hide gh", () => {
 	}
 });
 
+test("blocks shell -c after value-taking shell options", () => {
+	for (const command of [
+		"bash -O extglob -c 'gh issue comment 1 --body x'",
+		"bash -o pipefail -c 'gh issue comment 1 --body x'",
+		"sh -o pipefail -c 'gh issue comment 1 --body x'",
+		"zsh -o pipefail -c 'gh issue comment 1 --body x'",
+	]) {
+		assertAmbiguous(command, "shell");
+	}
+});
+
 test("blocks alias setup after literal wrapper resolution", () => {
 	for (const command of [
 		'command alias foo="gh issue comment 1 --body x"; foo',
@@ -212,6 +237,16 @@ test("blocks env split-string forms that can hide gh", () => {
 		'env --split-string="gh issue comment 1 --body x"',
 	]) {
 		assertAmbiguous(command, "split-string");
+	}
+});
+
+test("blocks env state-mutating options", () => {
+	for (const command of [
+		"GH_REPO=o/private env -i gh issue comment 1 --body x",
+		"GH_REPO=o/private env -u GH_REPO gh issue comment 1 --body x",
+		"env --chdir ../other gh issue comment 1 --body x",
+	]) {
+		assertAmbiguous(command, "env");
 	}
 });
 

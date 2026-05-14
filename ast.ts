@@ -320,13 +320,20 @@ function unwrapEnv(args: WordToken[]): UnwrappedCommand | null {
 				assignments,
 			};
 		}
-		if (
-			token.text === "-i" ||
-			token.text === "-0" ||
-			token.text === "--ignore-environment"
-		) {
+		if (token.text === "-0") {
 			index += 1;
 			continue;
+		}
+		if (token.text === "-i" || token.text === "--ignore-environment") {
+			return {
+				command: {
+					text: token.text,
+					literal: false,
+					reason: `env state-mutating option ${token.text} is not reviewable`,
+				},
+				args: args.slice(index + 1),
+				assignments,
+			};
 		}
 		if (
 			token.text === "-u" ||
@@ -334,15 +341,29 @@ function unwrapEnv(args: WordToken[]): UnwrappedCommand | null {
 			token.text === "-C" ||
 			token.text === "--chdir"
 		) {
-			index += 2;
-			continue;
+			return {
+				command: {
+					text: token.text,
+					literal: false,
+					reason: `env state-mutating option ${token.text} is not reviewable`,
+				},
+				args: args.slice(index + 1),
+				assignments,
+			};
 		}
 		if (
 			token.text.startsWith("--unset=") ||
 			token.text.startsWith("--chdir=")
 		) {
-			index += 1;
-			continue;
+			return {
+				command: {
+					text: token.text,
+					literal: false,
+					reason: `env state-mutating option ${token.text} is not reviewable`,
+				},
+				args: args.slice(index + 1),
+				assignments,
+			};
 		}
 		if (token.text.startsWith("-")) {
 			return {
@@ -472,25 +493,6 @@ function resolveEffectiveCommand(
 	return current;
 }
 
-function textMayMentionGh(value: string): boolean {
-	return /(^|[^A-Za-z0-9_-])gh([^A-Za-z0-9_-]|$)/.test(value);
-}
-
-function valueMayMentionGh(value: unknown): boolean {
-	if (typeof value === "string") {
-		return textMayMentionGh(value);
-	}
-	if (Array.isArray(value)) {
-		return value.some((item) => valueMayMentionGh(item));
-	}
-	const node = asNode(value);
-	if (!node) {
-		return false;
-	}
-
-	return Object.values(node).some((item) => valueMayMentionGh(item));
-}
-
 function containsNestedExecution(value: unknown): boolean {
 	const node = asNode(value);
 	if (!node) {
@@ -518,16 +520,14 @@ function expansionNestedExecutionReason(
 ): string | null {
 	if (
 		partNode.type === "ParameterExpansion" &&
-		containsNestedExecution(partNode) &&
-		valueMayMentionGh(partNode)
+		containsNestedExecution(partNode)
 	) {
 		return "parameter expansion contains nested command or process substitution that may execute gh";
 	}
 
 	if (
 		partNode.type === "ArithmeticExpansion" &&
-		containsNestedExecution(partNode) &&
-		valueMayMentionGh(partNode)
+		containsNestedExecution(partNode)
 	) {
 		return "arithmetic expansion contains nested command or process substitution that may execute gh";
 	}
@@ -651,9 +651,16 @@ function hasAliasSetup(
 }
 
 function shellArgsUseCommandString(args: WordToken[]): boolean {
+	let skipOptionValue = false;
+
 	for (const arg of args) {
 		if (!arg.literal) {
 			return true;
+		}
+
+		if (skipOptionValue) {
+			skipOptionValue = false;
+			continue;
 		}
 
 		if (arg.text === "--") {
@@ -662,6 +669,22 @@ function shellArgsUseCommandString(args: WordToken[]): boolean {
 
 		if (arg.text === "-c") {
 			return true;
+		}
+
+		if (
+			arg.text === "-O" ||
+			arg.text === "+O" ||
+			arg.text === "-o" ||
+			arg.text === "+o" ||
+			arg.text === "--rcfile" ||
+			arg.text === "--init-file"
+		) {
+			skipOptionValue = true;
+			continue;
+		}
+
+		if (arg.text.startsWith("-O") || arg.text.startsWith("+O")) {
+			continue;
 		}
 
 		if (arg.text.startsWith("-") && !arg.text.startsWith("--")) {
