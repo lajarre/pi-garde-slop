@@ -86,9 +86,68 @@ function commandBaseName(value: string): string {
 	return base.toLowerCase();
 }
 
+function containsGhCommandWord(text: string): boolean {
+	return /(^|[^A-Za-z0-9_-])gh([^A-Za-z0-9_-]|$)/.test(text);
+}
+
+function containsShellLiteralGhCommandWord(command: string): boolean {
+	let word = "";
+	let inSingleQuotes = false;
+	let inDoubleQuotes = false;
+	let escaped = false;
+
+	const flushWord = (): boolean => {
+		const containsGh = containsGhCommandWord(word);
+		word = "";
+		return containsGh;
+	};
+
+	for (const char of command) {
+		if (escaped) {
+			word += char;
+			escaped = false;
+			continue;
+		}
+
+		if (char === "\\" && !inSingleQuotes) {
+			escaped = true;
+			continue;
+		}
+
+		if (char === "'" && !inDoubleQuotes) {
+			inSingleQuotes = !inSingleQuotes;
+			continue;
+		}
+
+		if (char === '"' && !inSingleQuotes) {
+			inDoubleQuotes = !inDoubleQuotes;
+			continue;
+		}
+
+		if (
+			!inSingleQuotes &&
+			!inDoubleQuotes &&
+			/[\s;&|()<>]/.test(char)
+		) {
+			if (flushWord()) {
+				return true;
+			}
+			continue;
+		}
+
+		word += char;
+	}
+
+	if (escaped) {
+		word += "\\";
+	}
+
+	return flushWord();
+}
+
 function riskyWhenParserUnavailable(command: string): boolean {
 	return (
-		/(^|[^A-Za-z0-9_-])gh([^A-Za-z0-9_-]|$)/.test(command) ||
+		containsShellLiteralGhCommandWord(command) ||
 		/[$`]|\b(alias|function|eval|source)\b/.test(command) ||
 		/(^|[;&|()\s])\.(?=([;&|()\s]|$))/.test(command)
 	);
@@ -650,10 +709,46 @@ function hasAliasSetup(
 	return args.some((arg) => !arg.literal || arg.text.includes("="));
 }
 
+function shellArgUsesCommandStringOption(arg: WordToken): boolean {
+	if (!arg.literal) {
+		return true;
+	}
+
+	return (
+		arg.text === "-c" ||
+		(arg.text.startsWith("-") &&
+			!arg.text.startsWith("--") &&
+			arg.text.slice(1).includes("c"))
+	);
+}
+
+function remainingShellArgsMayUseCommandString(
+	args: WordToken[],
+	startIndex: number,
+): boolean {
+	for (let index = startIndex; index < args.length; index += 1) {
+		const arg = args[index];
+		if (!arg) {
+			continue;
+		}
+		if (!arg.literal) {
+			return true;
+		}
+		if (arg.text === "--") {
+			return false;
+		}
+		if (shellArgUsesCommandStringOption(arg)) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
 function shellArgsUseCommandString(args: WordToken[]): boolean {
 	let skipOptionValue = false;
 
-	for (const arg of args) {
+	for (const [index, arg] of args.entries()) {
 		if (!arg.literal) {
 			return true;
 		}
@@ -677,13 +772,22 @@ function shellArgsUseCommandString(args: WordToken[]): boolean {
 			arg.text === "-o" ||
 			arg.text === "+o" ||
 			arg.text === "--rcfile" ||
-			arg.text === "--init-file"
+			arg.text === "--init-file" ||
+			arg.text === "--emulate"
 		) {
 			skipOptionValue = true;
 			continue;
 		}
 
 		if (arg.text.startsWith("-O") || arg.text.startsWith("+O")) {
+			continue;
+		}
+
+		if (
+			arg.text.startsWith("--rcfile=") ||
+			arg.text.startsWith("--init-file=") ||
+			arg.text.startsWith("--emulate=")
+		) {
 			continue;
 		}
 
@@ -695,7 +799,7 @@ function shellArgsUseCommandString(args: WordToken[]): boolean {
 		}
 
 		if (arg.text.startsWith("--")) {
-			continue;
+			return remainingShellArgsMayUseCommandString(args, index + 1);
 		}
 
 		return false;

@@ -217,8 +217,15 @@ test("blocks shell -c after value-taking shell options", () => {
 		"bash -o pipefail -c 'gh issue comment 1 --body x'",
 		"sh -o pipefail -c 'gh issue comment 1 --body x'",
 		"zsh -o pipefail -c 'gh issue comment 1 --body x'",
+		"zsh --emulate sh -c 'gh issue comment 1 --body x'",
 	]) {
 		assertAmbiguous(command, "shell");
+	}
+});
+
+test("returns no invocations for shell executables without command strings", () => {
+	for (const command of ["bash --version", "zsh --version"]) {
+		assertReviewable(command, []);
 	}
 });
 
@@ -259,6 +266,38 @@ test("blocks heredoc stdin attached to gh", () => {
 
 test("blocks parser failures when gh is present", () => {
 	assertAmbiguous("gh issue comment 1 --body 'unterminated", "parse");
+});
+
+test("blocks parser unavailable for literal-hidden gh command words", () => {
+	setParseBashForTest(null);
+	try {
+		for (const command of [
+			"g''h issue comment 1 --body x",
+			'g""h issue comment 1 --body x',
+			"g\\h issue comment 1 --body x",
+		]) {
+			assertAmbiguous(command, "parser unavailable");
+		}
+	} finally {
+		setParseBashForTest(undefined);
+	}
+});
+
+test("blocks parser failures for literal-hidden gh command words", () => {
+	setParseBashForTest(() => {
+		throw new Error("forced parse failure");
+	});
+	try {
+		for (const command of [
+			"g''h issue comment 1 --body x",
+			'g""h issue comment 1 --body x',
+			"g\\h issue comment 1 --body x",
+		]) {
+			assertAmbiguous(command, "parse");
+		}
+	} finally {
+		setParseBashForTest(undefined);
+	}
 });
 
 test("blocks parser failures for standalone dot source", () => {
