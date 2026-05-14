@@ -320,6 +320,23 @@ test("blocks parser unavailable for dynamic words that may hide gh", () => {
 	}
 });
 
+test("blocks parser unavailable for shell scripts from opaque stdin", () => {
+	setParseBashForTest(null);
+	try {
+		for (const command of [
+			"bash < payload.txt",
+			"cat payload.txt | bash",
+			"sh < payload.txt",
+			"cat payload.txt | zsh",
+			"bash <<'EOF'\necho opaque\nEOF",
+		]) {
+			assertAmbiguous(command, "parser unavailable");
+		}
+	} finally {
+		setParseBashForTest(undefined);
+	}
+});
+
 test("blocks parser failures for literal-hidden gh command words", () => {
 	setParseBashForTest(() => {
 		throw new Error("forced parse failure");
@@ -344,6 +361,25 @@ test("blocks parser failures for dynamic words that may hide gh", () => {
 	});
 	try {
 		for (const command of ["g{h,} issue view 1", "g[h] issue view 1"]) {
+			assertAmbiguous(command, "parse");
+		}
+	} finally {
+		setParseBashForTest(undefined);
+	}
+});
+
+test("blocks parser failures for shell scripts from opaque stdin", () => {
+	setParseBashForTest(() => {
+		throw new Error("forced parse failure");
+	});
+	try {
+		for (const command of [
+			"bash < payload.txt",
+			"cat payload.txt | bash",
+			"zsh <&3",
+			"printf '%s\\n' payload | sh",
+			"bash <<< 'echo opaque'",
+		]) {
 			assertAmbiguous(command, "parse");
 		}
 	} finally {

@@ -291,11 +291,76 @@ function containsDynamicGhLikeCommandWord(command: string): boolean {
 	});
 }
 
+function shellSyntaxOnly(command: string): string {
+	let view = "";
+	let inSingleQuotes = false;
+	let inDoubleQuotes = false;
+	let escaped = false;
+
+	for (const char of command) {
+		if (escaped) {
+			view += inSingleQuotes ? char : " ";
+			escaped = false;
+			continue;
+		}
+
+		if (char === "\\" && !inSingleQuotes) {
+			view += " ";
+			escaped = true;
+			continue;
+		}
+
+		if (char === "'" && !inDoubleQuotes) {
+			inSingleQuotes = !inSingleQuotes;
+			view += " ";
+			continue;
+		}
+
+		if (char === '"' && !inSingleQuotes) {
+			inDoubleQuotes = !inDoubleQuotes;
+			view += " ";
+			continue;
+		}
+
+		view += inSingleQuotes || inDoubleQuotes ? " " : char;
+	}
+
+	return view;
+}
+
+function shellExecutableReadsOpaqueStdin(command: string): boolean {
+	const view = shellSyntaxOnly(command);
+	const shellExecutable = String.raw`(?:[^\s;&(){}<>|]*/)?(?:bash|sh|zsh)`;
+	const commandStart = String.raw`(?:^|[;&(){}]\s*)`;
+	const shellWord = `${shellExecutable}(?=$|[\\s;&(){}<>|])`;
+	const stdinRedirection = String.raw`(?:[0-9]*\s*(?:<<<|<<|<&|<))`;
+
+	const shellThenRedirection = new RegExp(
+		`${commandStart}${shellWord}[^;&(){}|\n]*${stdinRedirection}`,
+	);
+	if (shellThenRedirection.test(view)) {
+		return true;
+	}
+
+	const redirectionThenShell = new RegExp(
+		`${commandStart}${stdinRedirection}[^;&(){}|\n]*${shellWord}`,
+	);
+	if (redirectionThenShell.test(view)) {
+		return true;
+	}
+
+	const pipelineToShell = new RegExp(
+		String.raw`(^|[^|])\|&?(?!\|)\s*${shellWord}`,
+	);
+	return pipelineToShell.test(view);
+}
+
 function riskyWhenParserUnavailable(command: string): boolean {
 	const lineContinuedCommand = normalizeLineContinuations(command);
 	return (
 		containsShellLiteralGhCommandWord(lineContinuedCommand) ||
 		containsDynamicGhLikeCommandWord(lineContinuedCommand) ||
+		shellExecutableReadsOpaqueStdin(lineContinuedCommand) ||
 		/[$`]|\b(alias|function|eval|source)\b/.test(command) ||
 		/(^|[;&|()\s])\.(?=([;&|()\s]|$))/.test(command)
 	);
