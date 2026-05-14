@@ -567,33 +567,90 @@ function fallbackSegmentHasStdinRedirection(tokens: string[]): boolean {
 	return tokens.some((token) => stdinRedirectionTokens.has(token));
 }
 
+function isFallbackEnvSplitStringOption(word: string): boolean {
+	return (
+		word === "-S" ||
+		(word.startsWith("-S") && word.length > 2) ||
+		word === "--split-string" ||
+		word.startsWith("--split-string=")
+	);
+}
+
+function scanFallbackEnvArguments(
+	words: string[],
+	index: number,
+): { commandIndex: number; splitString: boolean } {
+	let current = index;
+
+	while (current < words.length) {
+		const word = words[current] ?? "";
+		if (word === "--") {
+			return { commandIndex: current + 1, splitString: false };
+		}
+		if (isAssignmentToken({ text: word, literal: true })) {
+			current += 1;
+			continue;
+		}
+		if (isFallbackEnvSplitStringOption(word)) {
+			return { commandIndex: current, splitString: true };
+		}
+		if (
+			word === "-u" ||
+			word === "--unset" ||
+			word === "-C" ||
+			word === "--chdir"
+		) {
+			current += 2;
+			continue;
+		}
+		if (word.startsWith("--unset=") || word.startsWith("--chdir=")) {
+			current += 1;
+			continue;
+		}
+		if (word.startsWith("-")) {
+			current += 1;
+			continue;
+		}
+		break;
+	}
+
+	return { commandIndex: current, splitString: false };
+}
+
 function fallbackSegmentHasEnvSplitString(tokens: string[]): boolean {
 	const words = removeFallbackRedirections(tokens);
+	let index = 0;
+	const seen = new Set<number>();
 
-	for (let index = 0; index < words.length; index += 1) {
-		const baseName = commandBaseName(words[index] ?? "");
-		if (baseName !== "env") {
+	while (index < words.length && !seen.has(index)) {
+		seen.add(index);
+
+		const word = words[index] ?? "";
+		if (isAssignmentToken({ text: word, literal: true })) {
+			index += 1;
 			continue;
 		}
 
-		for (const word of words.slice(index + 1)) {
-			if (word === "--") {
-				break;
-			}
-			if (
-				word === "-S" ||
-				word === "--split-string" ||
-				word.startsWith("--split-string=")
-			) {
+		const baseName = commandBaseName(word);
+		if (baseName === "env") {
+			const scan = scanFallbackEnvArguments(words, index + 1);
+			if (scan.splitString) {
 				return true;
 			}
-			if (
-				!word.startsWith("-") &&
-				!isAssignmentToken({ text: word, literal: true })
-			) {
-				break;
-			}
+			index = scan.commandIndex;
+			continue;
 		}
+		if (
+			baseName === "command" ||
+			baseName === "nohup" ||
+			baseName === "exec" ||
+			baseName === "builtin"
+		) {
+			index = skipFallbackWrapperOptions(baseName, words, index + 1);
+			continue;
+		}
+
+		return false;
 	}
 
 	return false;
@@ -898,11 +955,7 @@ function unwrapEnv(args: WordToken[]): UnwrappedCommand | null {
 			index += 1;
 			continue;
 		}
-		if (
-			token.text === "-S" ||
-			token.text === "--split-string" ||
-			token.text.startsWith("--split-string=")
-		) {
+		if (isFallbackEnvSplitStringOption(token.text)) {
 			return {
 				command: {
 					text: "",

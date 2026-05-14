@@ -241,6 +241,7 @@ test("blocks alias setup after literal wrapper resolution", () => {
 test("blocks env split-string forms that can hide gh", () => {
 	for (const command of [
 		'env -S "gh issue comment 1 --body x"',
+		"env -Sgh issue comment 1 --body x",
 		'env --split-string="gh issue comment 1 --body x"',
 	]) {
 		assertAmbiguous(command, "split-string");
@@ -342,6 +343,7 @@ test("blocks parser unavailable for shell scripts from opaque stdin", () => {
 			"cat payload.txt | (bash)",
 			"cat payload.txt | { bash; }",
 			"env -S bash < payload.txt",
+			"env -Sbash < payload.txt",
 			"env --split-string=bash < payload.txt",
 			"0< payload.txt bash",
 			"0<&0 bash",
@@ -409,6 +411,7 @@ test("blocks parser failures for shell scripts from opaque stdin", () => {
 			"cat payload.txt | (bash)",
 			"cat payload.txt | { bash; }",
 			"env -S bash < payload.txt",
+			"env -Sbash < payload.txt",
 			"env --split-string=bash < payload.txt",
 			"0< payload.txt bash",
 			"0<&0 bash",
@@ -424,6 +427,22 @@ test("blocks parser failures for shell scripts from opaque stdin", () => {
 test("does not treat command query modes as gh execution", () => {
 	for (const command of ["command -v gh", "command -V gh"]) {
 		assertReviewable(command, []);
+	}
+});
+
+test("does not block env split-string words outside effective command positions", () => {
+	for (const parser of [
+		null,
+		() => {
+			throw new Error("forced parse failure");
+		},
+	]) {
+		setParseBashForTest(parser);
+		try {
+			assertReviewable("echo env -Sbash < payload.txt", []);
+		} finally {
+			setParseBashForTest(undefined);
+		}
 	}
 });
 
