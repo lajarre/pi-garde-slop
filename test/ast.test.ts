@@ -264,6 +264,31 @@ test("blocks heredoc stdin attached to gh", () => {
 	);
 });
 
+test("blocks opaque stdin inherited by grouped gh commands", () => {
+	assertAmbiguous("{ gh issue view 1; } < payload.txt", "stdin");
+});
+
+test("blocks heredoc stdin inherited by grouped gh commands", () => {
+	assertAmbiguous(
+		"{ gh issue view 1; } <<'EOF'\nbody\nEOF",
+		"heredoc|stdin",
+	);
+});
+
+test("blocks shell executables that read scripts from heredoc stdin", () => {
+	assertAmbiguous(
+		"bash <<'EOF'\ngh issue view 1\nEOF",
+		"shell|heredoc|stdin",
+	);
+});
+
+test("blocks shell executables that read scripts from pipeline stdin", () => {
+	assertAmbiguous(
+		"printf 'gh issue view 1\\n' | bash",
+		"shell|pipeline|stdin",
+	);
+});
+
 test("blocks parser failures when gh is present", () => {
 	assertAmbiguous("gh issue comment 1 --body 'unterminated", "parse");
 });
@@ -284,6 +309,17 @@ test("blocks parser unavailable for literal-hidden gh command words", () => {
 	}
 });
 
+test("blocks parser unavailable for dynamic words that may hide gh", () => {
+	setParseBashForTest(null);
+	try {
+		for (const command of ["g{h,} issue view 1", "g[h] issue view 1"]) {
+			assertAmbiguous(command, "parser unavailable");
+		}
+	} finally {
+		setParseBashForTest(undefined);
+	}
+});
+
 test("blocks parser failures for literal-hidden gh command words", () => {
 	setParseBashForTest(() => {
 		throw new Error("forced parse failure");
@@ -295,6 +331,19 @@ test("blocks parser failures for literal-hidden gh command words", () => {
 			"g\\h issue comment 1 --body x",
 			"g\\\nh issue comment 1 --body x",
 		]) {
+			assertAmbiguous(command, "parse");
+		}
+	} finally {
+		setParseBashForTest(undefined);
+	}
+});
+
+test("blocks parser failures for dynamic words that may hide gh", () => {
+	setParseBashForTest(() => {
+		throw new Error("forced parse failure");
+	});
+	try {
+		for (const command of ["g{h,} issue view 1", "g[h] issue view 1"]) {
 			assertAmbiguous(command, "parse");
 		}
 	} finally {

@@ -29,8 +29,16 @@ type TraversalState = {
 	ambiguous?: ExtractionResult;
 };
 
+type TraversalContext = {
+	inheritedRedirections: RedirectionToken[];
+	inheritedPipelineStdin: boolean;
+};
+
 type BashNode = Record<string, unknown>;
-type VisitScript = (script: unknown) => void;
+type VisitScript = (
+	script: unknown,
+	context?: TraversalContext,
+) => void;
 
 function asNode(value: unknown): BashNode | null {
 	return value && typeof value === "object"
@@ -149,10 +157,145 @@ function normalizeLineContinuations(command: string): string {
 	return command.replace(/\\\r?\n/g, "");
 }
 
+function fallbackShellWords(command: string): string[] {
+	const words: string[] = [];
+	let word = "";
+	let inSingleQuotes = false;
+	let inDoubleQuotes = false;
+	let escaped = false;
+
+	const flushWord = (): void => {
+		if (word) {
+			words.push(word);
+			word = "";
+		}
+	};
+
+	for (const char of command) {
+		if (escaped) {
+			word += char;
+			escaped = false;
+			continue;
+		}
+
+		if (char === "\\" && !inSingleQuotes) {
+			escaped = true;
+			continue;
+		}
+
+		if (char === "'" && !inDoubleQuotes) {
+			inSingleQuotes = !inSingleQuotes;
+			continue;
+		}
+
+		if (char === '"' && !inSingleQuotes) {
+			inDoubleQuotes = !inDoubleQuotes;
+			continue;
+		}
+
+		if (
+			!inSingleQuotes &&
+			!inDoubleQuotes &&
+			/[\s;&|()<>]/.test(char)
+		) {
+			flushWord();
+			continue;
+		}
+
+		word += char;
+	}
+
+	if (escaped) {
+		word += "\\";
+	}
+	flushWord();
+
+	return words;
+}
+
+function expandSimpleBraces(pattern: string, limit = 32): string[] {
+	const start = pattern.indexOf("{");
+	if (start < 0) {
+		return [pattern];
+	}
+
+	const end = pattern.indexOf("}", start + 1);
+	if (end < 0) {
+		return [pattern];
+	}
+
+	const variants = pattern.slice(start + 1, end).split(",");
+	const prefix = pattern.slice(0, start);
+	const suffix = pattern.slice(end + 1);
+	const expanded: string[] = [];
+
+	for (const variant of variants) {
+		for (const tail of expandSimpleBraces(suffix, limit)) {
+			expanded.push(`${prefix}${variant}${tail}`);
+			if (expanded.length >= limit) {
+				return expanded;
+			}
+		}
+	}
+
+	return expanded;
+}
+
+function globPatternCanMatchGh(pattern: string): boolean {
+	const candidates = expandSimpleBraces(pattern);
+
+	return candidates.some((candidate) => {
+		let regex = "^";
+		for (let index = 0; index < candidate.length; index += 1) {
+			const char = candidate[index] ?? "";
+			if (char === "*") {
+				regex += ".*";
+				continue;
+			}
+			if (char === "?") {
+				regex += ".";
+				continue;
+			}
+			if (char === "[") {
+				const end = candidate.indexOf("]", index + 1);
+				if (end < 0) {
+					regex += "\\[";
+					continue;
+				}
+				const content = candidate.slice(index + 1, end);
+				const normalizedContent = content.startsWith("!")
+					? `^${content.slice(1)}`
+					: content;
+				regex += `[${normalizedContent}]`;
+				index = end;
+				continue;
+			}
+			regex += char.replace(/[\\^$+?.()|{}]/g, "\\$&");
+		}
+		regex += "$";
+
+		try {
+			return new RegExp(regex).test("gh");
+		} catch {
+			return false;
+		}
+	});
+}
+
+function containsDynamicGhLikeCommandWord(command: string): boolean {
+	return fallbackShellWords(command).some((word) => {
+		const baseName = commandBaseName(word);
+		return (
+			/[{}[\]*?]/.test(baseName) && globPatternCanMatchGh(baseName)
+		);
+	});
+}
+
 function riskyWhenParserUnavailable(command: string): boolean {
 	const lineContinuedCommand = normalizeLineContinuations(command);
 	return (
 		containsShellLiteralGhCommandWord(lineContinuedCommand) ||
+		containsDynamicGhLikeCommandWord(lineContinuedCommand) ||
 		/[$`]|\b(alias|function|eval|source)\b/.test(command) ||
 		/(^|[;&|()\s])\.(?=([;&|()\s]|$))/.test(command)
 	);
@@ -624,6 +767,7 @@ function expansionNestedExecutionReason(
 function collectNestedScriptsFromWord(
 	word: unknown,
 	visitScript: VisitScript,
+	context?: TraversalContext,
 ): string | null {
 	const node = asNode(word);
 	if (!node || !Array.isArray(node.parts)) {
@@ -640,6 +784,7 @@ function collectNestedScriptsFromWord(
 			const reason = collectNestedScriptsFromWord(
 				partNode,
 				visitScript,
+				context,
 			);
 			if (reason) {
 				return reason;
@@ -657,7 +802,7 @@ function collectNestedScriptsFromWord(
 				partNode.type === "ProcessSubstitution") &&
 			partNode.body
 		) {
-			visitScript(partNode.body);
+			visitScript(partNode.body, context);
 		}
 	}
 
@@ -667,6 +812,7 @@ function collectNestedScriptsFromWord(
 function collectNestedScriptsFromSimpleCommand(
 	commandNode: unknown,
 	visitScript: VisitScript,
+	context?: TraversalContext,
 ): string | null {
 	const node = asNode(commandNode);
 	if (!node) {
@@ -674,14 +820,22 @@ function collectNestedScriptsFromSimpleCommand(
 	}
 
 	if (node.name) {
-		const reason = collectNestedScriptsFromWord(node.name, visitScript);
+		const reason = collectNestedScriptsFromWord(
+			node.name,
+			visitScript,
+			context,
+		);
 		if (reason) {
 			return reason;
 		}
 	}
 
 	for (const arg of nodeArray(node, "args")) {
-		const reason = collectNestedScriptsFromWord(arg, visitScript);
+		const reason = collectNestedScriptsFromWord(
+			arg,
+			visitScript,
+			context,
+		);
 		if (reason) {
 			return reason;
 		}
@@ -693,6 +847,7 @@ function collectNestedScriptsFromSimpleCommand(
 			const reason = collectNestedScriptsFromWord(
 				assignmentNode.value,
 				visitScript,
+				context,
 			);
 			if (reason) {
 				return reason;
@@ -702,6 +857,7 @@ function collectNestedScriptsFromSimpleCommand(
 			const reason = collectNestedScriptsFromWord(
 				assignmentNode.word,
 				visitScript,
+				context,
 			);
 			if (reason) {
 				return reason;
@@ -715,6 +871,7 @@ function collectNestedScriptsFromSimpleCommand(
 			const reason = collectNestedScriptsFromWord(
 				redirectionNode.target,
 				visitScript,
+				context,
 			);
 			if (reason) {
 				return reason;
@@ -837,6 +994,7 @@ function shellArgsUseCommandString(args: WordToken[]): boolean {
 
 function commandExecutingShellFormReason(
 	command: UnwrappedCommand,
+	stdinReason: string | null,
 ): string | null {
 	const baseName = commandBaseName(command.command.text);
 
@@ -855,19 +1013,45 @@ function commandExecutingShellFormReason(
 		return "shell executable -c scripts are not reviewable";
 	}
 
+	if (
+		(baseName === "bash" || baseName === "sh" || baseName === "zsh") &&
+		stdinReason
+	) {
+		return `shell executable reads opaque script from ${stdinReason}`;
+	}
+
 	return null;
 }
 
-function hasOpaqueStdinRedirection(
+function opaqueStdinReason(
 	redirections: RedirectionToken[],
-): boolean {
-	return redirections.some(
-		(redirection) =>
-			redirection.targetKind === "HereDoc" ||
-			redirection.operator === "<<<" ||
-			redirection.operator === "<" ||
-			redirection.operator === "<&",
-	);
+	pipelineIndex: number,
+	inheritedPipelineStdin: boolean,
+): string | null {
+	if (
+		redirections.some(
+			(redirection) => redirection.targetKind === "HereDoc",
+		)
+	) {
+		return "heredoc stdin";
+	}
+
+	if (
+		redirections.some(
+			(redirection) =>
+				redirection.operator === "<<<" ||
+				redirection.operator === "<" ||
+				redirection.operator === "<&",
+		)
+	) {
+		return "stdin redirection";
+	}
+
+	if (pipelineIndex > 0 || inheritedPipelineStdin) {
+		return "pipeline stdin";
+	}
+
+	return null;
 }
 
 function hasOpaqueInputArg(argv: string[]): boolean {
@@ -898,6 +1082,7 @@ function validateGhInvocation(
 	command: UnwrappedCommand,
 	pipelineIndex: number,
 	redirections: RedirectionToken[],
+	inheritedPipelineStdin: boolean,
 ): ExtractionResult | null {
 	if (!command.command.literal) {
 		return ambiguous("dynamic command word may hide gh");
@@ -934,15 +1119,14 @@ function validateGhInvocation(
 		return ambiguous("gh api uses opaque stdin via --input -");
 	}
 
-	if (hasOpaqueStdinRedirection(redirections)) {
+	const stdinReason = opaqueStdinReason(
+		redirections,
+		pipelineIndex,
+		inheritedPipelineStdin,
+	);
+	if (stdinReason) {
 		return ambiguous(
-			"gh invocation uses heredoc or opaque stdin redirection",
-		);
-	}
-
-	if (pipelineIndex > 0) {
-		return ambiguous(
-			"gh invocation reads opaque stdin from a pipeline",
+			`gh invocation reads opaque stdin from ${stdinReason}`,
 		);
 	}
 
@@ -952,6 +1136,7 @@ function validateGhInvocation(
 function visitSimpleCommand(
 	commandNode: unknown,
 	pipelineIndex: number,
+	context: TraversalContext,
 	state: TraversalState,
 	visitScript: VisitScript,
 ): void {
@@ -963,6 +1148,7 @@ function visitSimpleCommand(
 	const nestedReason = collectNestedScriptsFromSimpleCommand(
 		node,
 		visitScript,
+		context,
 	);
 	if (nestedReason) {
 		state.ambiguous = ambiguous(nestedReason);
@@ -1015,7 +1201,18 @@ function visitSimpleCommand(
 		return;
 	}
 
-	const shellFormReason = commandExecutingShellFormReason(effective);
+	const redirections = [
+		...context.inheritedRedirections,
+		...redirectionsToTokens(node.redirections),
+	];
+	const shellFormReason = commandExecutingShellFormReason(
+		effective,
+		opaqueStdinReason(
+			redirections,
+			pipelineIndex,
+			context.inheritedPipelineStdin,
+		),
+	);
 	if (shellFormReason) {
 		state.ambiguous = ambiguous(shellFormReason);
 		return;
@@ -1034,11 +1231,11 @@ function visitSimpleCommand(
 		}
 	}
 
-	const redirections = redirectionsToTokens(node.redirections);
 	const validationFailure = validateGhInvocation(
 		effective,
 		pipelineIndex,
 		redirections,
+		context.inheritedPipelineStdin,
 	);
 	if (validationFailure) {
 		state.ambiguous = validationFailure;
@@ -1057,6 +1254,7 @@ function visitSimpleCommand(
 function visitCommandNode(
 	commandNode: unknown,
 	pipelineIndex: number,
+	context: TraversalContext,
 	state: TraversalState,
 	visitScript: VisitScript,
 ): void {
@@ -1066,7 +1264,13 @@ function visitCommandNode(
 	}
 
 	if (node.type === "SimpleCommand") {
-		visitSimpleCommand(node, pipelineIndex, state, visitScript);
+		visitSimpleCommand(
+			node,
+			pipelineIndex,
+			context,
+			state,
+			visitScript,
+		);
 		return;
 	}
 
@@ -1077,40 +1281,56 @@ function visitCommandNode(
 		return;
 	}
 
+	const childContext: TraversalContext = {
+		inheritedRedirections: [
+			...context.inheritedRedirections,
+			...redirectionsToTokens(node.redirections),
+		],
+		inheritedPipelineStdin:
+			context.inheritedPipelineStdin || pipelineIndex > 0,
+	};
+
 	if (Array.isArray(node.condition)) {
-		visitScript({ statements: node.condition });
+		visitScript({ statements: node.condition }, childContext);
 	}
 	for (const clause of nodeArray(node, "clauses")) {
 		const clauseNode = asNode(clause);
 		if (Array.isArray(clauseNode?.condition)) {
-			visitScript({ statements: clauseNode.condition });
+			visitScript({ statements: clauseNode.condition }, childContext);
 		}
 		if (Array.isArray(clauseNode?.body)) {
-			visitScript({ statements: clauseNode.body });
+			visitScript({ statements: clauseNode.body }, childContext);
 		}
 	}
 	const body = asNode(node.body);
 	if (body && Array.isArray(body.statements)) {
-		visitScript(body);
+		visitScript(body, childContext);
 	}
 	if (Array.isArray(node.body)) {
-		visitScript({ statements: node.body });
+		visitScript({ statements: node.body }, childContext);
 	}
 	if (Array.isArray(node.elseBody)) {
-		visitScript({ statements: node.elseBody });
+		visitScript({ statements: node.elseBody }, childContext);
 	}
 	for (const item of nodeArray(node, "items")) {
 		const itemNode = asNode(item);
 		if (Array.isArray(itemNode?.body)) {
-			visitScript({ statements: itemNode.body });
+			visitScript({ statements: itemNode.body }, childContext);
 		}
 	}
 }
 
 function analyzeAst(ast: unknown): ExtractionResult {
 	const state: TraversalState = { invocations: [] };
+	const emptyContext: TraversalContext = {
+		inheritedRedirections: [],
+		inheritedPipelineStdin: false,
+	};
 
-	const visitScript = (script: unknown): void => {
+	const visitScript = (
+		script: unknown,
+		context: TraversalContext = emptyContext,
+	): void => {
 		if (state.ambiguous) {
 			return;
 		}
@@ -1144,6 +1364,7 @@ function analyzeAst(ast: unknown): ExtractionResult {
 					visitCommandNode(
 						commandNode,
 						pipelineIndex,
+						context,
 						state,
 						visitScript,
 					);
