@@ -64,6 +64,12 @@ function loadParseBash(): ParseBash | null {
 	return parseBash;
 }
 
+export function setParseBashForTest(
+	parser: ParseBash | null | undefined,
+): void {
+	parseBash = parser;
+}
+
 function ambiguous(reason: string): ExtractionResult {
 	return {
 		kind: "ambiguous",
@@ -83,7 +89,8 @@ function commandBaseName(value: string): string {
 function riskyWhenParserUnavailable(command: string): boolean {
 	return (
 		/(^|[^A-Za-z0-9_-])gh([^A-Za-z0-9_-]|$)/.test(command) ||
-		/[$`]|\b(alias|function|eval|source|\.)\b/.test(command)
+		/[$`]|\b(alias|function|eval|source)\b/.test(command) ||
+		/(^|[;&|()\s])\.(?=([;&|()\s]|$))/.test(command)
 	);
 }
 
@@ -465,13 +472,76 @@ function resolveEffectiveCommand(
 	return current;
 }
 
+function textMayMentionGh(value: string): boolean {
+	return /(^|[^A-Za-z0-9_-])gh([^A-Za-z0-9_-]|$)/.test(value);
+}
+
+function valueMayMentionGh(value: unknown): boolean {
+	if (typeof value === "string") {
+		return textMayMentionGh(value);
+	}
+	if (Array.isArray(value)) {
+		return value.some((item) => valueMayMentionGh(item));
+	}
+	const node = asNode(value);
+	if (!node) {
+		return false;
+	}
+
+	return Object.values(node).some((item) => valueMayMentionGh(item));
+}
+
+function containsNestedExecution(value: unknown): boolean {
+	const node = asNode(value);
+	if (!node) {
+		if (Array.isArray(value)) {
+			return value.some((item) => containsNestedExecution(item));
+		}
+		return false;
+	}
+
+	if (
+		node.type === "CommandSubstitution" ||
+		node.type === "ProcessSubstitution" ||
+		node.type === "ArithCommandSubst"
+	) {
+		return true;
+	}
+
+	return Object.values(node).some((item) =>
+		containsNestedExecution(item),
+	);
+}
+
+function expansionNestedExecutionReason(
+	partNode: BashNode,
+): string | null {
+	if (
+		partNode.type === "ParameterExpansion" &&
+		containsNestedExecution(partNode) &&
+		valueMayMentionGh(partNode)
+	) {
+		return "parameter expansion contains nested command or process substitution that may execute gh";
+	}
+
+	if (
+		partNode.type === "ArithmeticExpansion" &&
+		containsNestedExecution(partNode) &&
+		valueMayMentionGh(partNode)
+	) {
+		return "arithmetic expansion contains nested command or process substitution that may execute gh";
+	}
+
+	return null;
+}
+
 function collectNestedScriptsFromWord(
 	word: unknown,
 	visitScript: VisitScript,
-): void {
+): string | null {
 	const node = asNode(word);
 	if (!node || !Array.isArray(node.parts)) {
-		return;
+		return null;
 	}
 
 	for (const part of node.parts) {
@@ -481,8 +551,19 @@ function collectNestedScriptsFromWord(
 		}
 
 		if (partNode.type === "DoubleQuoted") {
-			collectNestedScriptsFromWord(partNode, visitScript);
+			const reason = collectNestedScriptsFromWord(
+				partNode,
+				visitScript,
+			);
+			if (reason) {
+				return reason;
+			}
 			continue;
+		}
+
+		const expansionReason = expansionNestedExecutionReason(partNode);
+		if (expansionReason) {
+			return expansionReason;
 		}
 
 		if (
@@ -493,41 +574,69 @@ function collectNestedScriptsFromWord(
 			visitScript(partNode.body);
 		}
 	}
+
+	return null;
 }
 
 function collectNestedScriptsFromSimpleCommand(
 	commandNode: unknown,
 	visitScript: VisitScript,
-): void {
+): string | null {
 	const node = asNode(commandNode);
 	if (!node) {
-		return;
+		return null;
 	}
 
 	if (node.name) {
-		collectNestedScriptsFromWord(node.name, visitScript);
+		const reason = collectNestedScriptsFromWord(node.name, visitScript);
+		if (reason) {
+			return reason;
+		}
 	}
 
 	for (const arg of nodeArray(node, "args")) {
-		collectNestedScriptsFromWord(arg, visitScript);
+		const reason = collectNestedScriptsFromWord(arg, visitScript);
+		if (reason) {
+			return reason;
+		}
 	}
 
 	for (const assignment of nodeArray(node, "assignments")) {
 		const assignmentNode = asNode(assignment);
 		if (assignmentNode?.value) {
-			collectNestedScriptsFromWord(assignmentNode.value, visitScript);
+			const reason = collectNestedScriptsFromWord(
+				assignmentNode.value,
+				visitScript,
+			);
+			if (reason) {
+				return reason;
+			}
 		}
 		if (assignmentNode?.word) {
-			collectNestedScriptsFromWord(assignmentNode.word, visitScript);
+			const reason = collectNestedScriptsFromWord(
+				assignmentNode.word,
+				visitScript,
+			);
+			if (reason) {
+				return reason;
+			}
 		}
 	}
 
 	for (const redirection of nodeArray(node, "redirections")) {
 		const redirectionNode = asNode(redirection);
 		if (redirectionNode?.target) {
-			collectNestedScriptsFromWord(redirectionNode.target, visitScript);
+			const reason = collectNestedScriptsFromWord(
+				redirectionNode.target,
+				visitScript,
+			);
+			if (reason) {
+				return reason;
+			}
 		}
 	}
+
+	return null;
 }
 
 function hasAliasSetup(
@@ -697,7 +806,14 @@ function visitSimpleCommand(
 		return;
 	}
 
-	collectNestedScriptsFromSimpleCommand(node, visitScript);
+	const nestedReason = collectNestedScriptsFromSimpleCommand(
+		node,
+		visitScript,
+	);
+	if (nestedReason) {
+		state.ambiguous = ambiguous(nestedReason);
+		return;
+	}
 	if (state.ambiguous) {
 		return;
 	}
@@ -807,18 +923,8 @@ function visitCommandNode(
 		return;
 	}
 
-	const body = asNode(node.body);
-	if (body && Array.isArray(body.statements)) {
-		visitScript(body);
-	}
-	if (Array.isArray(node.body)) {
-		visitScript({ statements: node.body });
-	}
 	if (Array.isArray(node.condition)) {
 		visitScript({ statements: node.condition });
-	}
-	if (Array.isArray(node.elseBody)) {
-		visitScript({ statements: node.elseBody });
 	}
 	for (const clause of nodeArray(node, "clauses")) {
 		const clauseNode = asNode(clause);
@@ -828,6 +934,16 @@ function visitCommandNode(
 		if (Array.isArray(clauseNode?.body)) {
 			visitScript({ statements: clauseNode.body });
 		}
+	}
+	const body = asNode(node.body);
+	if (body && Array.isArray(body.statements)) {
+		visitScript(body);
+	}
+	if (Array.isArray(node.body)) {
+		visitScript({ statements: node.body });
+	}
+	if (Array.isArray(node.elseBody)) {
+		visitScript({ statements: node.elseBody });
 	}
 	for (const item of nodeArray(node, "items")) {
 		const itemNode = asNode(item);

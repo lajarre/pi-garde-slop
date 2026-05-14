@@ -1,7 +1,29 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { extractGhInvocations } from "../ast.ts";
+import * as ast from "../ast.ts";
 import { bashToolCall } from "./support/harness.ts";
+
+const { extractGhInvocations } = ast;
+
+type ParseBash = (input: string) => unknown;
+
+function setParseBashForTest(
+	parser: ParseBash | null | undefined,
+): void {
+	const seam = (
+		ast as typeof ast & {
+			setParseBashForTest?: (
+				parser: ParseBash | null | undefined,
+			) => void;
+		}
+	).setParseBashForTest;
+
+	if (!seam) {
+		assert.fail("setParseBashForTest seam is missing");
+	}
+
+	seam(parser);
+}
 
 function assertReviewable(
 	command: string,
@@ -57,6 +79,24 @@ test("extracts multiple gh invocations joined by ; in execution order", () => {
 	);
 });
 
+test("extracts while condition before body in execution order", () => {
+	assertReviewable("while gh issue view 1; do gh pr view 2; done", [
+		["gh", "issue", "view", "1"],
+		["gh", "pr", "view", "2"],
+	]);
+});
+
+test("extracts if condition before then and else branches", () => {
+	assertReviewable(
+		"if gh issue view 1; then gh pr view 2; else gh release view v1; fi",
+		[
+			["gh", "issue", "view", "1"],
+			["gh", "pr", "view", "2"],
+			["gh", "release", "view", "v1"],
+		],
+	);
+});
+
 test("returns no invocations for non-gh bash", () => {
 	const result = extractGhInvocations("npm test");
 
@@ -80,6 +120,20 @@ test("blocks command substitution in gh args", () => {
 		"gh issue comment $(cat n) --body x",
 		"command substitution",
 	);
+});
+
+test("blocks gh hidden inside arithmetic expansion substitution", () => {
+	assertAmbiguous(
+		"echo $(( $(gh issue comment 1 --body x) + 1 ))",
+		"arithmetic expansion",
+	);
+});
+
+test("blocks gh hidden inside parameter expansion substitution", () => {
+	const command =
+		"echo " + "$" + "{x:-" + "$" + "(gh issue comment 1 --body x)}";
+
+	assertAmbiguous(command, "parameter expansion");
 });
 
 test("blocks gh api opaque stdin payloads", () => {
@@ -170,6 +224,17 @@ test("blocks heredoc stdin attached to gh", () => {
 
 test("blocks parser failures when gh is present", () => {
 	assertAmbiguous("gh issue comment 1 --body 'unterminated", "parse");
+});
+
+test("blocks parser failures for standalone dot source", () => {
+	setParseBashForTest(() => {
+		throw new Error("forced parse failure");
+	});
+	try {
+		assertAmbiguous(". ./script", "parse");
+	} finally {
+		setParseBashForTest(undefined);
+	}
 });
 
 test("keeps leading assignments and unwraps literal simple wrappers", () => {
