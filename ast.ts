@@ -299,6 +299,21 @@ function unwrapEnv(args: WordToken[]): UnwrappedCommand | null {
 			continue;
 		}
 		if (
+			token.text === "-S" ||
+			token.text === "--split-string" ||
+			token.text.startsWith("--split-string=")
+		) {
+			return {
+				command: {
+					text: "",
+					literal: false,
+					reason: "env split-string is not reviewable",
+				},
+				args: args.slice(index + 1),
+				assignments,
+			};
+		}
+		if (
 			token.text === "-i" ||
 			token.text === "-0" ||
 			token.text === "--ignore-environment"
@@ -323,8 +338,15 @@ function unwrapEnv(args: WordToken[]): UnwrappedCommand | null {
 			continue;
 		}
 		if (token.text.startsWith("-")) {
-			index += 1;
-			continue;
+			return {
+				command: {
+					text: token.text,
+					literal: false,
+					reason: `unsupported env option ${token.text} is not reviewable`,
+				},
+				args: args.slice(index + 1),
+				assignments,
+			};
 		}
 		break;
 	}
@@ -396,6 +418,7 @@ function unwrapLayer(
 	}
 
 	switch (commandBaseName(command.text)) {
+		case "builtin":
 		case "command":
 		case "nohup":
 			return unwrapSimpleWrapper(args);
@@ -516,6 +539,60 @@ function hasAliasSetup(
 	}
 
 	return args.some((arg) => !arg.literal || arg.text.includes("="));
+}
+
+function shellArgsUseCommandString(args: WordToken[]): boolean {
+	for (const arg of args) {
+		if (!arg.literal) {
+			return true;
+		}
+
+		if (arg.text === "--") {
+			return false;
+		}
+
+		if (arg.text === "-c") {
+			return true;
+		}
+
+		if (arg.text.startsWith("-") && !arg.text.startsWith("--")) {
+			if (arg.text.slice(1).includes("c")) {
+				return true;
+			}
+			continue;
+		}
+
+		if (arg.text.startsWith("--")) {
+			continue;
+		}
+
+		return false;
+	}
+
+	return false;
+}
+
+function commandExecutingShellFormReason(
+	command: UnwrappedCommand,
+): string | null {
+	const baseName = commandBaseName(command.command.text);
+
+	if (baseName === "eval") {
+		return "eval shell strings are not reviewable";
+	}
+
+	if (baseName === "source" || baseName === ".") {
+		return "source shell file loading is not reviewable";
+	}
+
+	if (
+		(baseName === "bash" || baseName === "sh" || baseName === "zsh") &&
+		shellArgsUseCommandString(command.args)
+	) {
+		return "shell executable -c scripts are not reviewable";
+	}
+
+	return null;
 }
 
 function hasOpaqueStdinRedirection(
@@ -657,7 +734,20 @@ function visitSimpleCommand(
 		assignments,
 	);
 	if (!effective.command.literal) {
-		state.ambiguous = ambiguous("dynamic command word may hide gh");
+		state.ambiguous = ambiguous(
+			effective.command.reason ?? "dynamic command word may hide gh",
+		);
+		return;
+	}
+
+	if (hasAliasSetup(effective.command.text, effective.args)) {
+		state.ambiguous = ambiguous("alias setup is not reviewable");
+		return;
+	}
+
+	const shellFormReason = commandExecutingShellFormReason(effective);
+	if (shellFormReason) {
+		state.ambiguous = ambiguous(shellFormReason);
 		return;
 	}
 

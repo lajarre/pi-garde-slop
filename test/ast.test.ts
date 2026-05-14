@@ -122,6 +122,45 @@ test("blocks alias setup that hides gh behind another name", () => {
 	);
 });
 
+test("blocks eval strings that can hide gh", () => {
+	assertAmbiguous("eval 'gh issue comment 1 --body x'", "eval");
+});
+
+test("blocks source commands that can hide gh in external files", () => {
+	assertAmbiguous("source ./script", "source");
+});
+
+test("blocks dot commands that can hide gh in external files", () => {
+	assertAmbiguous(". ./script", "source");
+});
+
+test("blocks shell -c commands that can hide gh", () => {
+	for (const shell of ["bash", "sh", "zsh"]) {
+		assertAmbiguous(
+			`${shell} -c 'gh issue comment 1 --body x'`,
+			"shell",
+		);
+	}
+});
+
+test("blocks alias setup after literal wrapper resolution", () => {
+	for (const command of [
+		'command alias foo="gh issue comment 1 --body x"; foo',
+		'builtin alias foo="gh issue comment 1 --body x"; foo',
+	]) {
+		assertAmbiguous(command, "alias");
+	}
+});
+
+test("blocks env split-string forms that can hide gh", () => {
+	for (const command of [
+		'env -S "gh issue comment 1 --body x"',
+		'env --split-string="gh issue comment 1 --body x"',
+	]) {
+		assertAmbiguous(command, "split-string");
+	}
+});
+
 test("blocks heredoc stdin attached to gh", () => {
 	assertAmbiguous(
 		"gh issue comment 1 --body-file - <<EOF\nbody\nEOF",
