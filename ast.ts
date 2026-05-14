@@ -328,31 +328,260 @@ function shellSyntaxOnly(command: string): string {
 	return view;
 }
 
-function shellExecutableReadsOpaqueStdin(command: string): boolean {
+const fallbackControlTokens = new Set([
+	";",
+	"&&",
+	"||",
+	"\n",
+	"&",
+	"(",
+	")",
+	"{",
+	"}",
+]);
+
+const stdinRedirectionTokens = new Set(["<", "<<", "<<<", "<&"]);
+
+function isShellSyntaxOperatorStart(char: string): boolean {
+	return ";&|(){}<>".includes(char);
+}
+
+function fallbackSyntaxTokens(command: string): string[] {
 	const view = shellSyntaxOnly(command);
-	const shellExecutable = String.raw`(?:[^\s;&(){}<>|]*/)?(?:bash|sh|zsh)`;
-	const commandStart = String.raw`(?:^|[;&(){}]\s*)`;
-	const shellWord = `${shellExecutable}(?=$|[\\s;&(){}<>|])`;
-	const stdinRedirection = String.raw`(?:[0-9]*\s*(?:<<<|<<|<&|<))`;
+	const tokens: string[] = [];
+	let index = 0;
 
-	const shellThenRedirection = new RegExp(
-		`${commandStart}${shellWord}[^;&(){}|\n]*${stdinRedirection}`,
-	);
-	if (shellThenRedirection.test(view)) {
-		return true;
+	while (index < view.length) {
+		const char = view[index] ?? "";
+
+		if (char === "\n") {
+			tokens.push("\n");
+			index += 1;
+			continue;
+		}
+
+		if (/\s/.test(char)) {
+			index += 1;
+			continue;
+		}
+
+		const pair = view.slice(index, index + 2);
+		const triple = view.slice(index, index + 3);
+		if (triple === "<<<") {
+			tokens.push(triple);
+			index += 3;
+			continue;
+		}
+		if (["&&", "||", "|&", "<<", "<&", ">>"].includes(pair)) {
+			tokens.push(pair);
+			index += 2;
+			continue;
+		}
+		if (isShellSyntaxOperatorStart(char)) {
+			tokens.push(char);
+			index += 1;
+			continue;
+		}
+
+		let word = "";
+		while (index < view.length) {
+			const wordChar = view[index] ?? "";
+			if (/\s/.test(wordChar) || isShellSyntaxOperatorStart(wordChar)) {
+				break;
+			}
+			word += wordChar;
+			index += 1;
+		}
+		if (word) {
+			tokens.push(word);
+		}
 	}
 
-	const redirectionThenShell = new RegExp(
-		`${commandStart}${stdinRedirection}[^;&(){}|\n]*${shellWord}`,
-	);
-	if (redirectionThenShell.test(view)) {
-		return true;
+	return tokens;
+}
+
+function removeFallbackRedirections(tokens: string[]): string[] {
+	const words: string[] = [];
+	let skipNext = false;
+
+	for (const token of tokens) {
+		if (skipNext) {
+			skipNext = false;
+			continue;
+		}
+		if (stdinRedirectionTokens.has(token) || token === ">") {
+			skipNext = true;
+			continue;
+		}
+		if (
+			!fallbackControlTokens.has(token) &&
+			token !== "|" &&
+			token !== "|&"
+		) {
+			words.push(token);
+		}
 	}
 
-	const pipelineToShell = new RegExp(
-		String.raw`(^|[^|])\|&?(?!\|)\s*${shellWord}`,
+	return words;
+}
+
+function skipFallbackEnvOptions(
+	words: string[],
+	index: number,
+): number {
+	let current = index;
+
+	while (current < words.length) {
+		const word = words[current] ?? "";
+		if (word === "--") {
+			return current + 1;
+		}
+		if (isAssignmentToken({ text: word, literal: true })) {
+			current += 1;
+			continue;
+		}
+		if (
+			word === "-u" ||
+			word === "--unset" ||
+			word === "-C" ||
+			word === "--chdir" ||
+			word === "-S" ||
+			word === "--split-string"
+		) {
+			current += 2;
+			continue;
+		}
+		if (
+			word.startsWith("--unset=") ||
+			word.startsWith("--chdir=") ||
+			word.startsWith("--split-string=")
+		) {
+			current += 1;
+			continue;
+		}
+		if (word.startsWith("-")) {
+			current += 1;
+			continue;
+		}
+		break;
+	}
+
+	return current;
+}
+
+function skipFallbackWrapperOptions(
+	baseName: string,
+	words: string[],
+	index: number,
+): number {
+	let current = index;
+
+	while (current < words.length) {
+		const word = words[current] ?? "";
+		if (word === "--") {
+			return current + 1;
+		}
+		if (baseName === "exec" && word === "-a") {
+			current += 2;
+			continue;
+		}
+		if (word.startsWith("-")) {
+			current += 1;
+			continue;
+		}
+		break;
+	}
+
+	return current;
+}
+
+function fallbackEffectiveCommandWord(tokens: string[]): string | null {
+	const words = removeFallbackRedirections(tokens);
+	let index = 0;
+	const seen = new Set<number>();
+
+	while (index < words.length && !seen.has(index)) {
+		seen.add(index);
+
+		const word = words[index] ?? "";
+		if (isAssignmentToken({ text: word, literal: true })) {
+			index += 1;
+			continue;
+		}
+
+		const baseName = commandBaseName(word);
+		if (baseName === "env") {
+			index = skipFallbackEnvOptions(words, index + 1);
+			continue;
+		}
+		if (
+			baseName === "command" ||
+			baseName === "nohup" ||
+			baseName === "exec" ||
+			baseName === "builtin"
+		) {
+			index = skipFallbackWrapperOptions(baseName, words, index + 1);
+			continue;
+		}
+
+		return word || null;
+	}
+
+	return null;
+}
+
+function fallbackSegmentHasStdinRedirection(tokens: string[]): boolean {
+	return tokens.some((token) => stdinRedirectionTokens.has(token));
+}
+
+function fallbackSegmentHasOpaqueShellStdin(
+	tokens: string[],
+	inheritedPipelineStdin: boolean,
+): boolean {
+	const command = fallbackEffectiveCommandWord(tokens);
+	const baseName = command ? commandBaseName(command) : "";
+
+	return (
+		(baseName === "bash" || baseName === "sh" || baseName === "zsh") &&
+		(inheritedPipelineStdin ||
+			fallbackSegmentHasStdinRedirection(tokens))
 	);
-	return pipelineToShell.test(view);
+}
+
+function shellExecutableReadsOpaqueStdin(command: string): boolean {
+	let segment: string[] = [];
+	let inheritedPipelineStdin = false;
+
+	const flushSegment = (): boolean => {
+		const isOpaqueShellStdin = fallbackSegmentHasOpaqueShellStdin(
+			segment,
+			inheritedPipelineStdin,
+		);
+		segment = [];
+		return isOpaqueShellStdin;
+	};
+
+	for (const token of fallbackSyntaxTokens(command)) {
+		if (token === "|" || token === "|&") {
+			if (flushSegment()) {
+				return true;
+			}
+			inheritedPipelineStdin = true;
+			continue;
+		}
+
+		if (fallbackControlTokens.has(token)) {
+			if (flushSegment()) {
+				return true;
+			}
+			inheritedPipelineStdin = false;
+			continue;
+		}
+
+		segment.push(token);
+	}
+
+	return flushSegment();
 }
 
 function riskyWhenParserUnavailable(command: string): boolean {

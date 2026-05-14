@@ -329,6 +329,16 @@ test("blocks parser unavailable for shell scripts from opaque stdin", () => {
 			"sh < payload.txt",
 			"cat payload.txt | zsh",
 			"bash <<'EOF'\necho opaque\nEOF",
+			"FOO=1 bash < payload.txt",
+			"GH_TOKEN=x bash < payload.txt",
+			"cat payload.txt | FOO=1 bash",
+			"env bash < payload.txt",
+			"command bash < payload.txt",
+			"cat payload.txt | env bash",
+			"echo ok\nbash < payload.txt",
+			"echo ok\nbash <<< opaque",
+			"echo ok\nbash <<'EOF'\necho opaque\nEOF",
+			"false || bash < payload.txt",
 		]) {
 			assertAmbiguous(command, "parser unavailable");
 		}
@@ -379,6 +389,16 @@ test("blocks parser failures for shell scripts from opaque stdin", () => {
 			"zsh <&3",
 			"printf '%s\\n' payload | sh",
 			"bash <<< 'echo opaque'",
+			"FOO=1 bash < payload.txt",
+			"GH_TOKEN=x bash < payload.txt",
+			"cat payload.txt | FOO=1 bash",
+			"env bash < payload.txt",
+			"command bash < payload.txt",
+			"cat payload.txt | env bash",
+			"echo ok\nbash < payload.txt",
+			"echo ok\nbash <<< opaque",
+			"echo ok\nbash <<'EOF'\necho opaque\nEOF",
+			"false || bash < payload.txt",
 		]) {
 			assertAmbiguous(command, "parse");
 		}
