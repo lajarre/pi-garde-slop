@@ -59,6 +59,29 @@ test("extracts a single literal gh invocation", () => {
 	]);
 });
 
+test("captures realistic public-repo gh write commands before execution", () => {
+	assertReviewable(
+		"gh pr create -R torvalds/linux --head lajarre:parser-check --base master --title parser-check --body-file .tmp/pr.md",
+		[
+			[
+				"gh",
+				"pr",
+				"create",
+				"-R",
+				"torvalds/linux",
+				"--head",
+				"lajarre:parser-check",
+				"--base",
+				"master",
+				"--title",
+				"parser-check",
+				"--body-file",
+				".tmp/pr.md",
+			],
+		],
+	);
+});
+
 test("extracts multiple gh invocations joined by && in execution order", () => {
 	assertReviewable(
 		"gh issue comment 1 --body-file a.md && gh pr review 2 --approve",
