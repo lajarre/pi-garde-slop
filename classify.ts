@@ -16,6 +16,7 @@ type CommandConfig = {
 type ApiInfo = {
 	endpoint?: string;
 	fields: string[];
+	inputValues: string[];
 	method: string | null;
 };
 
@@ -133,6 +134,8 @@ function classifyApiInvocation(
 	const isGraphqlEndpoint = endpoint === "graphql";
 	const hasGraphqlMutation =
 		isGraphqlEndpoint && info.fields.some(fieldIsGraphqlMutation);
+	const hasUninspectableGraphqlPayload =
+		isGraphqlEndpoint && graphqlPayloadCanHideMutation(info);
 	const apiAdvice = adviceForWrite("api.post", invocation.argv);
 
 	if (hasGraphqlMutation) {
@@ -154,6 +157,15 @@ function classifyApiInvocation(
 				apiWriteClass(info.method),
 				"repo-less gh api GraphQL write method is not approved in v1",
 				invocation.argv,
+			);
+		}
+		if (hasUninspectableGraphqlPayload) {
+			return unsupportedWrite(
+				base,
+				"api.graphql.mutation",
+				"file-backed or uninspectable gh api GraphQL payload may contain a mutation",
+				invocation.argv,
+				apiAdvice,
 			);
 		}
 		return { ...base, kind: "readOnly" };
@@ -366,7 +378,11 @@ function restPathRepoTarget(
 }
 
 function apiInfo(argv: string[]): ApiInfo {
-	const info: ApiInfo = { fields: [], method: null };
+	const info: ApiInfo = {
+		fields: [],
+		inputValues: [],
+		method: null,
+	};
 	if (argv[1] !== "api") {
 		return info;
 	}
@@ -394,6 +410,13 @@ function apiInfo(argv: string[]): ApiInfo {
 			continue;
 		}
 
+		const input = apiInputValue(token, next);
+		if (input) {
+			info.inputValues.push(input.value);
+			index += input.consumesNext ? 1 : 0;
+			continue;
+		}
+
 		const field = apiFieldValue(token, next);
 		if (field) {
 			info.fields.push(field.value);
@@ -413,6 +436,22 @@ function apiInfo(argv: string[]): ApiInfo {
 
 function apiFlagConsumesNext(token: string): boolean {
 	return hasWord(API_VALUE_FLAGS, token) || /^-[fFXH]$/.test(token);
+}
+
+function apiInputValue(
+	token: string,
+	next: string | undefined,
+): { consumesNext: boolean; value: string } | null {
+	if (token === "--input" && next !== undefined) {
+		return { consumesNext: true, value: next };
+	}
+	if (token.startsWith("--input=")) {
+		return {
+			consumesNext: false,
+			value: token.slice("--input=".length),
+		};
+	}
+	return null;
 }
 
 function apiFieldValue(
@@ -462,6 +501,24 @@ function fieldIsGraphqlMutation(field: string): boolean {
 		return false;
 	}
 	return /(^|\s)mutation\b/i.test(field.slice(separator + 1));
+}
+
+function graphqlPayloadCanHideMutation(info: ApiInfo): boolean {
+	return (
+		info.inputValues.length > 0 ||
+		info.fields.some(fieldIsGraphqlFileBackedQuery)
+	);
+}
+
+function fieldIsGraphqlFileBackedQuery(field: string): boolean {
+	const separator = field.indexOf("=");
+	if (separator < 0 || field.slice(0, separator) !== "query") {
+		return false;
+	}
+	return field
+		.slice(separator + 1)
+		.trimStart()
+		.startsWith("@");
 }
 
 function adviceForWrite(

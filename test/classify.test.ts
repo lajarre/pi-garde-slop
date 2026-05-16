@@ -342,6 +342,51 @@ test("detects GraphQL mutations as unsupported repo-less api writes", () => {
 	assertAdvice(result, /--input file\.json/i);
 });
 
+test("fails closed for file-backed GraphQL payloads", () => {
+	const cases = [
+		{
+			name: "input file",
+			argv: ["gh", "api", "graphql", "--input", "payload.json"],
+			normalizedCommand: "gh api graphql --input payload.json",
+		},
+		{
+			name: "short query file field",
+			argv: ["gh", "api", "graphql", "-f", "query=@mutation.graphql"],
+			normalizedCommand: "gh api graphql -f query=@mutation.graphql",
+		},
+		{
+			name: "long query file field",
+			argv: [
+				"gh",
+				"api",
+				"graphql",
+				"--field",
+				"query=@mutation.graphql",
+			],
+			normalizedCommand:
+				"gh api graphql --field query=@mutation.graphql",
+		},
+	] as const;
+
+	for (const item of cases) {
+		const result = classify([...item.argv]);
+
+		assert.equal(result.kind, "unsupportedWrite", item.name);
+		assert.equal(result.writeClass, "api.graphql.mutation", item.name);
+		assert.match(
+			result.reason,
+			/file-backed|uninspectable/i,
+			item.name,
+		);
+		assert.equal(
+			result.normalizedCommand,
+			item.normalizedCommand,
+			item.name,
+		);
+		assertAdvice(result, /--input file\.json/i);
+	}
+});
+
 test("marks unsupported public-external write classes explicitly", () => {
 	assertUnsupportedWrite(
 		["gh", "repo", "create", "o/new", "--public"],
