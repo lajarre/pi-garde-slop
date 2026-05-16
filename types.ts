@@ -104,3 +104,72 @@ export type GhClassification =
 	| WriteGhClassification
 	| UnsupportedWriteGhClassification
 	| AmbiguousGhClassification;
+
+export type RepoTargetSource = GhTargetHintSource | "cwdRemote";
+
+export interface ResolvedRepoTarget {
+	repo: string;
+	source: RepoTargetSource;
+}
+
+export interface RepoMetadataParent {
+	isPrivate?: boolean;
+	nameWithOwner: string;
+	visibility?: string | null;
+}
+
+export interface RepoMetadata {
+	isFork: boolean;
+	isPrivate: boolean;
+	nameWithOwner: string;
+	parent: RepoMetadataParent | null;
+	viewerPermission: string;
+	visibility: string;
+}
+
+export type RepoMetadataCache = Map<string, RepoMetadata>;
+
+export interface RepoExecResult {
+	code?: number;
+	exitCode?: number;
+	stderr?: string;
+	stdout?: string;
+}
+
+export type RepoExec = (
+	command: string,
+	args: string[],
+	options?: { cwd?: string; timeout?: number },
+) => Promise<RepoExecResult> | RepoExecResult;
+
+export interface RepoResolutionResolved {
+	kind: "resolved";
+	metadata: RepoMetadata;
+	target: ResolvedRepoTarget;
+}
+
+export interface RepoResolutionConflict {
+	kind: "conflict";
+	guidance: string;
+	reason: string;
+	sources: ResolvedRepoTarget[];
+}
+
+export interface RepoResolutionUnresolved {
+	kind: "unresolved";
+	guidance: string;
+	reason: string;
+}
+
+export interface RepoResolutionMetadataError {
+	kind: "metadataError";
+	guidance: string;
+	reason: string;
+	target: ResolvedRepoTarget;
+}
+
+export type RepoResolutionResult =
+	| RepoResolutionResolved
+	| RepoResolutionConflict
+	| RepoResolutionUnresolved
+	| RepoResolutionMetadataError;
