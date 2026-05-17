@@ -29,7 +29,6 @@ const FILE_VALUE_FLAGS = new Set([
 	"--input",
 ]);
 const INLINE_VALUE_FLAGS = new Set(["--body", "--notes"]);
-const API_FIELD_FLAGS = new Set(["-f", "-F", "--field", "--raw-field"]);
 
 export async function resolvePayloadIdentity(
 	classification: GhClassification,
@@ -104,17 +103,10 @@ function payloadReferences(
 			continue;
 		}
 
-		const fieldEquals = equalsFlagValue(token, API_FIELD_FLAGS);
-		if (fieldEquals) {
-			references.push(
-				apiFieldReference(fieldEquals.flag, fieldEquals.value),
-			);
-			continue;
-		}
-
-		if (API_FIELD_FLAGS.has(token)) {
-			references.push(apiFieldReference(token, next ?? ""));
-			index += 1;
+		const apiField = apiFieldPayloadValue(token, next);
+		if (apiField) {
+			references.push(apiFieldReference(apiField.flag, apiField.value));
+			index += apiField.consumesNext ? 1 : 0;
 		}
 	}
 
@@ -136,6 +128,50 @@ function equalsFlagValue(
 
 function fileReference(flag: string, path: string): PayloadReference {
 	return { flag, kind: "file", path };
+}
+
+function apiFieldPayloadValue(
+	token: string,
+	next: string | undefined,
+): { consumesNext: boolean; flag: string; value: string } | null {
+	if ((token === "-f" || token === "-F") && next !== undefined) {
+		return { consumesNext: true, flag: token, value: next };
+	}
+	if (
+		(token === "--field" || token === "--raw-field") &&
+		next !== undefined
+	) {
+		return { consumesNext: true, flag: token, value: next };
+	}
+	if (token.startsWith("--field=")) {
+		return {
+			consumesNext: false,
+			flag: "--field",
+			value: token.slice("--field=".length),
+		};
+	}
+	if (token.startsWith("--raw-field=")) {
+		return {
+			consumesNext: false,
+			flag: "--raw-field",
+			value: token.slice("--raw-field=".length),
+		};
+	}
+	if (
+		(token.startsWith("-f") || token.startsWith("-F")) &&
+		token.length > 2
+	) {
+		return {
+			consumesNext: false,
+			flag: token.slice(0, 2),
+			value: stripOptionalEquals(token.slice(2)),
+		};
+	}
+	return null;
+}
+
+function stripOptionalEquals(value: string): string {
+	return value.startsWith("=") ? value.slice(1) : value;
 }
 
 function apiFieldReference(

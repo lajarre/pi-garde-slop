@@ -155,6 +155,79 @@ test("fails closed with rewrite guidance when a payload file cannot be read", as
 	assert.match(result.guidance, /reviewable local file/i);
 });
 
+test("reads file-backed concatenated gh api field payloads", async () => {
+	for (const token of ["-Fbody=@a.md", "-F=body=@a.md"]) {
+		const classification = writeClassification([
+			"gh",
+			"api",
+			"repos/o/r/issues",
+			token,
+		]);
+		const payload = await payloadFor(classification, {
+			"a.md": `api body from ${token}`,
+		});
+
+		assert.deepEqual(payload.parts, [
+			{
+				digest: sha256(`api body from ${token}`),
+				flag: "-F",
+				kind: "file",
+				path: "a.md",
+			},
+		]);
+		assert.match(payload.displaySummary, /a\.md/);
+		assert.doesNotMatch(payload.displaySummary, /api body from/);
+	}
+});
+
+test("redacts concatenated raw gh api field values", async () => {
+	for (const token of ["-fbody=inline value", "-f=body=inline value"]) {
+		const classification = writeClassification([
+			"gh",
+			"api",
+			"repos/o/r/issues",
+			token,
+		]);
+		const payload = await payloadFor(classification);
+
+		assert.equal(payload.parts[0]?.kind, "inline");
+		assert.equal(payload.parts[0]?.digest, sha256("body=inline value"));
+		assert.match(payload.displaySummary, /redacted/);
+		assert.doesNotMatch(payload.displaySummary, /inline value/);
+	}
+});
+
+test("fails closed when a concatenated gh api field payload file cannot be read", async () => {
+	const classification = writeClassification([
+		"gh",
+		"api",
+		"repos/o/r/issues",
+		"-Fbody=@missing.md",
+	]);
+	const result = await resolvePayloadIdentity(classification, {
+		readFile: async () => {
+			throw new Error("EACCES: permission denied");
+		},
+	});
+
+	assert.equal(result.kind, "blocked");
+	assert.match(result.reason, /missing\.md/);
+	assert.match(result.reason, /permission denied/);
+	assert.match(result.guidance, /rewrite/i);
+});
+
+test("changes approval signatures when concatenated gh api field file contents change", async () => {
+	const argv = ["gh", "api", "repos/o/r/issues", "-Fbody=@a.md"];
+	const first = buildApprovalSignature([
+		await approvalWrite(argv, { "a.md": "first api body" }),
+	]);
+	const second = buildApprovalSignature([
+		await approvalWrite(argv, { "a.md": "second api body" }),
+	]);
+
+	assert.notEqual(second.digest, first.digest);
+});
+
 test("reuses an exact single-write approval signature only when command, repo, target, and payload match", async () => {
 	const store = createApprovalSignatureStore();
 	const approvedWrite = await approvalWrite(
