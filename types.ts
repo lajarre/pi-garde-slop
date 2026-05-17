@@ -173,3 +173,59 @@ export type RepoResolutionResult =
 	| RepoResolutionConflict
 	| RepoResolutionUnresolved
 	| RepoResolutionMetadataError;
+
+export type PayloadSourceKind = "file" | "inline";
+
+export interface PayloadPartIdentity {
+	digest: string;
+	flag: string;
+	kind: PayloadSourceKind;
+	path?: string;
+}
+
+export interface PayloadIdentity {
+	digest: string;
+	digestAlgorithm: "sha256";
+	displaySummary: string;
+	parts: PayloadPartIdentity[];
+}
+
+export interface PayloadIdentityResolved {
+	identity: PayloadIdentity;
+	kind: "resolved";
+}
+
+export interface PayloadIdentityBlocked {
+	guidance: string;
+	kind: "blocked";
+	reason: string;
+}
+
+export type PayloadIdentityResult =
+	| PayloadIdentityResolved
+	| PayloadIdentityBlocked;
+
+export type PayloadFileReadResult = string | Buffer | Uint8Array;
+
+export type PayloadFileReader = (
+	path: string,
+) => Promise<PayloadFileReadResult> | PayloadFileReadResult;
+
+export interface ApprovalWriteInput {
+	classification: WriteGhClassification;
+	payload: PayloadIdentity;
+	repo: RepoMetadata;
+	target: ResolvedRepoTarget;
+}
+
+export interface ApprovalSignature {
+	digest: string;
+	displaySummary: string;
+	kind: "batch" | "single";
+	writeCount: number;
+}
+
+export interface ApprovalSignatureStore {
+	has(signature: ApprovalSignature): boolean;
+	remember(signature: ApprovalSignature): void;
+}
