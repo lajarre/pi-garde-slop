@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import * as ast from "../ast.ts";
+import * as ast from "../extensions/github-write-approval/ast.ts";
 import { bashToolCall } from "./support/harness.ts";
 
 const { extractGhInvocations } = ast;

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { RepoMetadata } from "../types.ts";
+import type { RepoMetadata } from "../extensions/github-write-approval/types.ts";
 import { bashToolCall, createHarness } from "./support/harness.ts";
 
 function metadata(

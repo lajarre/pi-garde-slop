@@ -3,17 +3,17 @@ import { test } from "node:test";
 import {
 	buildApprovalSignature,
 	createApprovalSignatureStore,
-} from "../approval.ts";
-import { extractGhInvocations } from "../ast.ts";
-import { classifyGhInvocation } from "../classify.ts";
-import { resolvePayloadIdentity } from "../payload.ts";
-import { evaluateBatchPolicy } from "../policy.ts";
+} from "../extensions/github-write-approval/approval.ts";
+import { extractGhInvocations } from "../extensions/github-write-approval/ast.ts";
+import { classifyGhInvocation } from "../extensions/github-write-approval/classify.ts";
+import { resolvePayloadIdentity } from "../extensions/github-write-approval/payload.ts";
+import { evaluateBatchPolicy } from "../extensions/github-write-approval/policy.ts";
 import {
 	createRepoMetadataCache,
 	REPO_METADATA_JSON_FIELDS,
 	type RepoExec,
 	resolveRepoForGhWrite,
-} from "../repo.ts";
+} from "../extensions/github-write-approval/repo.ts";
 import type {
 	ApprovalSignature,
 	ApprovalWriteInput,
@@ -25,7 +25,7 @@ import type {
 	RepoMetadata,
 	RepoResolutionResult,
 	ResolvedRepoTarget,
-} from "../types.ts";
+} from "../extensions/github-write-approval/types.ts";
 import { bashToolCall, createHarness } from "./support/harness.ts";
 
 type Fixture<Id extends string = string> = {

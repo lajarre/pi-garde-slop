@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { classifyGhInvocation } from "../classify.ts";
-import type { GhClassification, GhInvocation } from "../types.ts";
+import { classifyGhInvocation } from "../extensions/github-write-approval/classify.ts";
+import type {
+	GhClassification,
+	GhInvocation,
+} from "../extensions/github-write-approval/types.ts";
 
 function invocation(
 	argv: string[],

@@ -4,9 +4,9 @@ import { test } from "node:test";
 import {
 	buildApprovalSignature,
 	createApprovalSignatureStore,
-} from "../approval.ts";
-import { classifyGhInvocation } from "../classify.ts";
-import { resolvePayloadIdentity } from "../payload.ts";
+} from "../extensions/github-write-approval/approval.ts";
+import { classifyGhInvocation } from "../extensions/github-write-approval/classify.ts";
+import { resolvePayloadIdentity } from "../extensions/github-write-approval/payload.ts";
 import type {
 	ApprovalWriteInput,
 	GhClassification,
@@ -14,7 +14,7 @@ import type {
 	PayloadIdentity,
 	RepoMetadata,
 	ResolvedRepoTarget,
-} from "../types.ts";
+} from "../extensions/github-write-approval/types.ts";
 
 function sha256(value: string): string {
 	return createHash("sha256").update(value).digest("hex");

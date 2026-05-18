@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { classifyGhInvocation } from "../classify.ts";
+import { classifyGhInvocation } from "../extensions/github-write-approval/classify.ts";
 import {
 	createRepoMetadataCache,
 	type RepoExec,
@@ -8,8 +8,11 @@ import {
 	type RepoMetadata,
 	type RepoResolutionResult,
 	resolveRepoForGhWrite,
-} from "../repo.ts";
-import type { GhClassification, GhInvocation } from "../types.ts";
+} from "../extensions/github-write-approval/repo.ts";
+import type {
+	GhClassification,
+	GhInvocation,
+} from "../extensions/github-write-approval/types.ts";
 
 const METADATA_FIELDS =
 	"nameWithOwner,isPrivate,visibility,isFork,parent,viewerPermission";

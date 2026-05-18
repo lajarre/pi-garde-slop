@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildApprovalSignature } from "../approval.ts";
-import { classifyGhInvocation } from "../classify.ts";
-import { resolvePayloadIdentity } from "../payload.ts";
-import { evaluateBatchPolicy } from "../policy.ts";
-import { formatApprovalPrompt } from "../prompt.ts";
+import { buildApprovalSignature } from "../extensions/github-write-approval/approval.ts";
+import { classifyGhInvocation } from "../extensions/github-write-approval/classify.ts";
+import { resolvePayloadIdentity } from "../extensions/github-write-approval/payload.ts";
+import { evaluateBatchPolicy } from "../extensions/github-write-approval/policy.ts";
+import { formatApprovalPrompt } from "../extensions/github-write-approval/prompt.ts";
 import type {
 	ApprovalWriteInput,
 	GhClassification,
@@ -13,7 +13,7 @@ import type {
 	RepoMetadata,
 	RepoResolutionResult,
 	ResolvedRepoTarget,
-} from "../types.ts";
+} from "../extensions/github-write-approval/types.ts";
 
 function invocation(argv: string[]): GhInvocation {
 	return { assignments: [], argv };

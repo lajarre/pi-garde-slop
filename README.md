@@ -1,46 +1,69 @@
-# github-write-approval
+# pi-garde-slop
 
-Pi extension that intercepts built-in `bash` tool calls, extracts reviewable `gh` invocations, and gates public GitHub writes before the shell command runs.
+Approve public GitHub CLI writes before Pi runs them.
 
-## scope
+## tl;dr
 
-This extension handles GitHub CLI commands inside Pi `bash` tool calls.
+Pi agents often use `gh` to create issues, comment on PRs, merge, or edit releases. `pi-garde-slop` lets private-repo writes pass, but pauses public-repo writes for a human approval prompt with redacted payloads and SHA-256 digests.
+
+```bash
+pi install npm:pi-garde-slop
+```
+
+Git install works before the npm package is published:
+
+```bash
+pi install git:github.com/lajarre/pi-garde-slop
+```
+
+## 30-second quickstart
+
+1. Install the package.
+2. Start Pi in a GitHub checkout with `gh` already authenticated.
+3. Ask the agent to prepare a public GitHub write, for example an issue comment.
+4. Review the approval prompt before the shell command runs.
+
+The prompt shows the target repo, write class, command shape, validation hints, and payload digests. Inline bodies and API fields are redacted.
+
+## what it protects
+
+`pi-garde-slop` intercepts built-in Pi `bash` tool calls, extracts literal `gh` invocations, resolves their GitHub repo target, checks repo visibility with `gh repo view`, hashes reviewable payload files, and blocks or prompts before the shell command executes.
 
 In scope:
 
 - literal, AST-extracted `gh` commands;
-- repo-scoped GitHub writes whose target repo can be resolved and checked with `gh repo view owner/repo --json nameWithOwner,isPrivate,visibility,isFork,parent,viewerPermission`;
+- repo-scoped GitHub writes whose target repo can be resolved;
 - public repo approval prompts in sessions with UI;
 - fail-closed blocking for ambiguous, unsupported, unresolved, or no-UI public writes;
 - session-local approval reuse for exact single-write signatures or exact ordered batch signatures.
 
-Non-goals for v1:
+Out of scope:
 
 - generic SaaS write protection;
 - wildcard approvals such as `gh *`;
 - persistent audit logs;
 - browser review UI;
-- approving commands hidden behind aliases, shell functions, dynamic shell forms, opaque stdin, or editor/web prompts;
-- approving non-repo-scoped writes such as repo creation or gist writes.
+- commands hidden behind aliases, shell functions, dynamic shell forms, opaque stdin, or editor/web prompts;
+- non-repo-scoped writes such as repo creation or gist writes.
 
 ## supported reviewable write classes
 
-Read-only `gh` commands pass through after classification. The following repo-scoped write classes are reviewable when their arguments are literal, their target repo resolves, and their payload identity is deterministic:
+Read-only `gh` commands pass through after classification. These repo-scoped write classes are reviewable when their arguments are literal, their target repo resolves, and their payload identity is deterministic:
 
-| Class | Commands |
+| class | commands |
 |---|---|
-| Issues | `gh issue create`, `edit`, `comment`, `close`, `reopen`, `delete`, `lock`, `unlock`, `transfer` |
-| Pull requests | `gh pr create`, `edit`, `comment`, `review`, `close`, `reopen`, `ready`, `merge`, `lock`, `unlock`, `update-branch`, `revert` |
-| Releases | `gh release create` |
-| Repositories | `gh repo edit`, `delete`, `rename`, `archive`, `unarchive` |
-| Labels | `gh label create`, `edit`, `delete` |
-| Actions | `gh workflow run` |
-| Secrets and variables | repo-scoped `gh secret set` and `gh variable set` |
+| issues | `gh issue create`, `edit`, `comment`, `close`, `reopen`, `delete`, `lock`, `unlock`, `transfer` |
+| pull requests | `gh pr create`, `edit`, `comment`, `review`, `close`, `reopen`, `ready`, `merge`, `lock`, `unlock`, `update-branch`, `revert` |
+| releases | `gh release create` |
+| repositories | `gh repo edit`, `delete`, `rename`, `archive`, `unarchive` |
+| labels | `gh label create`, `edit`, `delete` |
+| actions | `gh workflow run` |
+| secrets and variables | repo-scoped `gh secret set` and `gh variable set` |
 | REST API | repo-scoped `gh api` writes using `POST`, `PATCH`, `PUT`, or `DELETE`, including field flags that imply `POST` |
 
 ## unsupported or ambiguous forms
 
-These forms always block in v1 instead of asking for approval:
+These forms always block instead of asking for approval:
 
 - dynamic command words, dynamic subcommands, command substitutions, process substitutions, parameter/arithmetic expansions, globs, brace expansion, and non-literal assignments that can affect `gh`;
 - shell functions, aliases, `eval`, `source`, shell `-c` scripts, and shell executables reading opaque stdin;
@@ -53,7 +76,12 @@ These forms always block in v1 instead of asking for approval:
 - org/user-scoped forms outside the repo-scoped approval path, such as non-repo-scoped secrets or variables;
 - unreadable payload files or payload files that cannot be hashed deterministically.
 
-Rewrite blocked commands as literal, repo-scoped `gh ... -R owner/repo ...` commands with reviewable local payload files, for example `--body-file .tmp/body.md` or `gh api --input .tmp/payload.json`.
+Rewrite blocked commands as literal, repo-scoped commands with reviewable local payload files:
+
+```bash
+gh issue comment 123 -R owner/repo --body-file .tmp/body.md
+gh api repos/owner/repo/issues --input .tmp/payload.json
+```
 
 ## repo visibility policy
 
@@ -73,7 +101,7 @@ Policy after metadata lookup:
 - public repo writes require approval;
 - PR writes against a fork require approval when the fork parent is public, even if the fork itself is private;
 - `ADMIN`, maintainer, or write permission does not bypass the gate;
-- non-repo-scoped or unsupported writes block in v1.
+- non-repo-scoped or unsupported writes block.
 
 ## approval reuse
 
@@ -81,11 +109,11 @@ Approvals are kept in memory for the current extension session only.
 
 A single-write approval is reused only when the exact signature repeats. The signature includes the normalized command, write class, resolved repo metadata, target identity, payload identity, and payload digest.
 
-A batch approval is all-or-none for the exact ordered batch. The ordered batch signature includes every write in order. Reordered, subset, or superset batches are different signatures and require a new prompt.
+A batch approval is all-or-none for the exact ordered batch. Reordered, subset, or superset batches are different signatures and require a new prompt.
 
-File-backed payload identity is content-based. The signature includes the referenced path and a digest of the file contents at approval time. Same path with changed contents, changed path, changed flags, changed target, changed repo, or changed metadata yields a different signature. If a referenced file cannot be read and hashed, the command blocks.
+File-backed payload identity is content-based. The signature includes the referenced path and a digest of the file contents at approval time. Same path with changed contents, changed path, changed flags, changed target, changed repo, or changed metadata yields a different signature.
 
-## no-UI behavior and local artifacts
+## no-UI behavior
 
 When `ctx.hasUI` is false, public writes block because no approval prompt can be shown. The block guidance asks the agent to prepare reviewable local artifacts under `.tmp/`, such as:
 
@@ -97,28 +125,48 @@ When `ctx.hasUI` is false, public writes block because no approval prompt can be
 
 Read-only commands and private repo writes do not need public-write approval.
 
-## validation advice shown in prompts
+## prerequisites
 
-Approval prompts include deterministic validation hints when relevant:
+- Pi with package support.
+- GitHub CLI (`gh`) installed and authenticated.
+- Repository commands should use `-R owner/repo`, `GH_REPO=owner/repo`, a repo-scoped REST path, or a GitHub `origin` remote.
+- Interactive Pi UI for public write approvals.
 
-- `gh pr create`: `--dry-run` is not trusted as safe because it may still push; prefer an explicitly pushed branch and review local diff/stat;
-- `gh pr merge`: prefer `--match-head-commit`;
-- `gh release create`: prefer `--verify-tag`;
-- body/comment/review writes: prefer `--body-file` and review the local file contents against the payload digest;
-- release notes: prefer `--notes-file` and review the local file contents against the payload digest;
-- `gh api`: prefer `--input file.json`; opaque stdin is blocked, and prompts ask reviewers to compare the local JSON payload with the digest.
+## package reference
 
-## prompt redaction and payload digests
+`package.json` declares the Pi extension manifest:
 
-Prompts and durable summaries do not display raw inline payload values or secret values. Inline values from flags such as `--body`, `--notes`, `-f`, `-F`, `--field`, and `--raw-field` are shown as redacted text with a SHA-256 digest. File-backed payloads show the flag, file path, and SHA-256 digest of the file contents. The signature input remains content-based and exact even though the prompt display is redacted.
+```json
+{
+  "keywords": ["pi-package"],
+  "pi": {
+    "extensions": ["./extensions/github-write-approval/index.ts"]
+  }
+}
+```
 
-## QA
+Runtime dependency:
 
-Run the root gate from the extension bundle:
+- `just-bash` for conservative shell AST extraction.
+
+Pi core is a peer dependency and is not bundled.
+
+## development
 
 ```bash
-cd /Users/alex/workspace/aidev/pi-extensions
+npm install
 npm run check
 npm test
 npm run test:fixtures
+npm pack --dry-run
 ```
+
+Local Pi smoke test:
+
+```bash
+pi -e . -p "Use no tools. Say pi-garde-slop loaded."
+```
+
+## license
+
+ISC

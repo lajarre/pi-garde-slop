@@ -4,8 +4,8 @@ import type {
 	ToolCallBlockResult,
 	ToolCallEvent,
 	ToolCallResult,
-} from "@mariozechner/pi-coding-agent";
-import githubWriteApproval from "../../index.ts";
+} from "@earendil-works/pi-coding-agent";
+import githubWriteApproval from "../../extensions/github-write-approval/index.ts";
 
 export interface ExecCall {
 	command: string;
