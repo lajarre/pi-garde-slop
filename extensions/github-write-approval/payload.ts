@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type {
 	GhClassification,
+	GhWriteClass,
 	PayloadFileReader,
 	PayloadFileReadResult,
 	PayloadIdentity,
@@ -23,20 +24,30 @@ type PayloadReference =
 	| { flag: string; kind: "file"; path: string }
 	| { flag: string; kind: "inline"; value: string };
 
-const FILE_VALUE_FLAGS = new Set([
-	"--body-file",
-	"--notes-file",
-	"--input",
+const BODY_WRITE_CLASSES = new Set<GhWriteClass>([
+	"issue.comment",
+	"issue.create",
+	"pr.comment",
+	"pr.create",
+	"pr.review",
 ]);
-const INLINE_VALUE_FLAGS = new Set(["--body", "--notes"]);
+const RELEASE_VALUE_FLAGS = new Set([
+	"--discussion-category",
+	"--notes",
+	"--notes-file",
+	"--repo",
+	"--target",
+	"--title",
+	"-F",
+	"-R",
+	"-n",
+]);
 
 export async function resolvePayloadIdentity(
 	classification: GhClassification,
 	options: ResolvePayloadIdentityOptions = {},
 ): Promise<PayloadIdentityResult> {
-	const references = payloadReferences(
-		classification.signatureInput.argv,
-	);
+	const references = payloadReferences(classification);
 	const parts: PayloadPartIdentity[] = [];
 
 	for (const reference of references) {
@@ -62,65 +73,137 @@ export async function resolvePayloadIdentity(
 	};
 }
 
+export function hasFilePayloadReferences(
+	classification: GhClassification,
+): boolean {
+	return payloadReferences(classification).some(
+		(reference) => reference.kind === "file",
+	);
+}
+
 function payloadReferences(
-	argv: readonly string[],
+	classification: GhClassification,
 ): PayloadReference[] {
+	const argv = classification.signatureInput.argv;
+	const fileFlags = fileValueFlags(classification);
+	const inlineFlags = inlineValueFlags(classification);
 	const references: PayloadReference[] = [];
 
 	for (let index = 0; index < argv.length; index += 1) {
 		const token = argv[index] ?? "";
 		const next = argv[index + 1];
 
-		const fileEquals = equalsFlagValue(token, FILE_VALUE_FLAGS);
-		if (fileEquals) {
-			references.push(fileReference(fileEquals.flag, fileEquals.value));
+		const fileValue = flagValue(token, next, fileFlags);
+		if (fileValue) {
+			references.push(fileReference(fileValue.flag, fileValue.value));
+			index += fileValue.consumesNext ? 1 : 0;
 			continue;
 		}
 
-		if (FILE_VALUE_FLAGS.has(token)) {
-			references.push(fileReference(token, next ?? ""));
-			index += 1;
-			continue;
-		}
-
-		const inlineEquals = equalsFlagValue(token, INLINE_VALUE_FLAGS);
-		if (inlineEquals) {
+		const inlineValue = flagValue(token, next, inlineFlags);
+		if (inlineValue) {
 			references.push({
-				flag: inlineEquals.flag,
+				flag: inlineValue.flag,
 				kind: "inline",
-				value: inlineEquals.value,
+				value: inlineValue.value,
 			});
+			index += inlineValue.consumesNext ? 1 : 0;
 			continue;
 		}
 
-		if (INLINE_VALUE_FLAGS.has(token)) {
-			references.push({
-				flag: token,
-				kind: "inline",
-				value: next ?? "",
-			});
-			index += 1;
-			continue;
+		if (isApiInvocation(argv)) {
+			const apiField = apiFieldPayloadValue(token, next);
+			if (apiField) {
+				references.push(
+					apiFieldReference(apiField.flag, apiField.value),
+				);
+				index += apiField.consumesNext ? 1 : 0;
+			}
 		}
+	}
 
-		const apiField = apiFieldPayloadValue(token, next);
-		if (apiField) {
-			references.push(apiFieldReference(apiField.flag, apiField.value));
-			index += apiField.consumesNext ? 1 : 0;
-		}
+	if (
+		classification.kind === "write" &&
+		classification.writeClass === "release.create"
+	) {
+		references.push(...releaseAssetReferences(argv));
 	}
 
 	return references;
 }
 
-function equalsFlagValue(
+function fileValueFlags(classification: GhClassification): Set<string> {
+	if (isApiInvocation(classification.signatureInput.argv)) {
+		return new Set(["--input"]);
+	}
+
+	if (classification.kind !== "write") {
+		return new Set(["--body-file", "--notes-file"]);
+	}
+
+	if (BODY_WRITE_CLASSES.has(classification.writeClass)) {
+		return new Set(["--body-file", "-F"]);
+	}
+
+	if (classification.writeClass === "release.create") {
+		return new Set(["--notes-file", "-F"]);
+	}
+
+	return new Set(["--body-file", "--notes-file"]);
+}
+
+function inlineValueFlags(
+	classification: GhClassification,
+): Set<string> {
+	if (isApiInvocation(classification.signatureInput.argv)) {
+		return new Set();
+	}
+
+	if (classification.kind !== "write") {
+		return new Set(["--body", "--notes"]);
+	}
+
+	if (BODY_WRITE_CLASSES.has(classification.writeClass)) {
+		return new Set(["--body", "-b"]);
+	}
+
+	if (classification.writeClass === "release.create") {
+		return new Set(["--notes", "-n"]);
+	}
+
+	return new Set(["--body", "--notes"]);
+}
+
+function isApiInvocation(argv: readonly string[]): boolean {
+	return argv[1] === "api";
+}
+
+function flagValue(
 	token: string,
+	next: string | undefined,
 	flags: ReadonlySet<string>,
-): { flag: string; value: string } | null {
+): { consumesNext: boolean; flag: string; value: string } | null {
 	for (const flag of flags) {
-		const prefix = `${flag}=`;
-		if (token.startsWith(prefix)) {
-			return { flag, value: token.slice(prefix.length) };
+		if (token === flag) {
+			return { consumesNext: true, flag, value: next ?? "" };
+		}
+		if (flag.startsWith("--")) {
+			const prefix = `${flag}=`;
+			if (token.startsWith(prefix)) {
+				return {
+					consumesNext: false,
+					flag,
+					value: token.slice(prefix.length),
+				};
+			}
+			continue;
+		}
+		if (token.startsWith(flag) && token.length > flag.length) {
+			return {
+				consumesNext: false,
+				flag,
+				value: stripOptionalEquals(token.slice(flag.length)),
+			};
 		}
 	}
 	return null;
@@ -128,6 +211,47 @@ function equalsFlagValue(
 
 function fileReference(flag: string, path: string): PayloadReference {
 	return { flag, kind: "file", path };
+}
+
+function releaseAssetReferences(
+	argv: readonly string[],
+): PayloadReference[] {
+	const [, ...assets] = releaseCreatePositionals(argv);
+	return assets.map((asset) =>
+		fileReference("asset", releaseAssetPath(asset)),
+	);
+}
+
+function releaseCreatePositionals(argv: readonly string[]): string[] {
+	const positionals: string[] = [];
+	let parseFlags = true;
+
+	for (let index = 3; index < argv.length; index += 1) {
+		const token = argv[index] ?? "";
+		const next = argv[index + 1];
+		if (parseFlags && token === "--") {
+			parseFlags = false;
+			continue;
+		}
+		if (parseFlags) {
+			const value = flagValue(token, next, RELEASE_VALUE_FLAGS);
+			if (value) {
+				index += value.consumesNext ? 1 : 0;
+				continue;
+			}
+			if (token.startsWith("-") && token !== "-") {
+				continue;
+			}
+		}
+		positionals.push(token);
+	}
+
+	return positionals;
+}
+
+function releaseAssetPath(asset: string): string {
+	const hashIndex = asset.indexOf("#");
+	return hashIndex >= 0 ? asset.slice(0, hashIndex) : asset;
 }
 
 function apiFieldPayloadValue(

@@ -27,6 +27,9 @@ type UnwrappedCommand = {
 type TraversalState = {
 	invocations: GhInvocation[];
 	ambiguous?: ExtractionResult;
+	priorCommand: boolean;
+	priorNonGhCommand: boolean;
+	priorStateChange: boolean;
 };
 
 type TraversalContext = {
@@ -922,7 +925,6 @@ function unwrapSimpleWrapper(
 	if (!command) {
 		return null;
 	}
-
 	return {
 		command,
 		args: args.slice(index + 1),
@@ -1029,7 +1031,6 @@ function unwrapEnv(args: WordToken[]): UnwrappedCommand | null {
 	if (!command) {
 		return null;
 	}
-
 	return {
 		command,
 		args: args.slice(index + 1),
@@ -1083,6 +1084,289 @@ function unwrapExec(args: WordToken[]): UnwrappedCommand | null {
 	};
 }
 
+function dynamicWrapperCommand(
+	token: WordToken,
+	args: WordToken[],
+	assignments: string[] = [],
+): UnwrappedCommand {
+	return {
+		command: {
+			text: token.text,
+			literal: false,
+			reason:
+				token.reason ?? "dynamic executor wrapper argument may hide gh",
+		},
+		args,
+		assignments,
+	};
+}
+
+function unwrapSudo(args: WordToken[]): UnwrappedCommand | null {
+	let index = 0;
+	const assignments: string[] = [];
+	const valueOptions = new Set([
+		"-C",
+		"--close-from",
+		"-g",
+		"--group",
+		"-h",
+		"--host",
+		"-p",
+		"--prompt",
+		"-u",
+		"--user",
+	]);
+	const noValueOptions = new Set([
+		"-A",
+		"--askpass",
+		"-b",
+		"--background",
+		"-H",
+		"--set-home",
+		"-n",
+		"--non-interactive",
+		"-S",
+		"--stdin",
+	]);
+
+	while (index < args.length) {
+		const token = args[index];
+		if (!token) {
+			break;
+		}
+		if (!token.literal) {
+			return dynamicWrapperCommand(token, args.slice(index + 1));
+		}
+		if (token.text === "--") {
+			index += 1;
+			break;
+		}
+		if (
+			token.text === "-D" ||
+			token.text === "--chdir" ||
+			token.text.startsWith("--chdir=") ||
+			token.text === "-E" ||
+			token.text === "--preserve-env" ||
+			token.text.startsWith("--preserve-env=")
+		) {
+			if (wrapperArgsMayRunGh(args.slice(index + 1))) {
+				return dynamicWrapperCommand(
+					{
+						text: token.text,
+						literal: false,
+						reason: `sudo option ${token.text} can change gh cwd or environment`,
+					},
+					args.slice(index + 1),
+				);
+			}
+			index += token.text === "-D" || token.text === "--chdir" ? 2 : 1;
+			continue;
+		}
+		if (valueOptions.has(token.text)) {
+			index += 2;
+			continue;
+		}
+		if (
+			token.text.startsWith("--close-from=") ||
+			token.text.startsWith("--group=") ||
+			token.text.startsWith("--host=") ||
+			token.text.startsWith("--prompt=") ||
+			token.text.startsWith("--user=")
+		) {
+			index += 1;
+			continue;
+		}
+		if (noValueOptions.has(token.text)) {
+			index += 1;
+			continue;
+		}
+		if (
+			/^-[Cghpu].+/.test(token.text) ||
+			(token.text.startsWith("-") && token.text !== "-")
+		) {
+			if (wrapperArgsMayRunGh(args.slice(index + 1))) {
+				return dynamicWrapperCommand(
+					{
+						text: token.text,
+						literal: false,
+						reason: `unsupported sudo option ${token.text} before gh`,
+					},
+					args.slice(index + 1),
+				);
+			}
+			index += 1;
+			continue;
+		}
+		break;
+	}
+
+	while (index < args.length) {
+		const token = args[index];
+		if (!token || !isAssignmentToken(token)) {
+			break;
+		}
+		assignments.push(token.text);
+		index += 1;
+	}
+
+	const command = args[index];
+	if (!command) {
+		return null;
+	}
+	if (sudoCommandMayRunGh(command, args.slice(index + 1))) {
+		return dynamicWrapperCommand(
+			{
+				text: command.text,
+				literal: false,
+				reason: "sudo gh execution is not reviewable",
+			},
+			args.slice(index + 1),
+			assignments,
+		);
+	}
+
+	return {
+		command,
+		args: args.slice(index + 1),
+		assignments,
+	};
+}
+
+function unwrapTimeout(args: WordToken[]): UnwrappedCommand | null {
+	let index = 0;
+	const valueOptions = new Set([
+		"-k",
+		"--kill-after",
+		"-s",
+		"--signal",
+	]);
+
+	while (index < args.length) {
+		const token = args[index];
+		if (!token) {
+			break;
+		}
+		if (!token.literal) {
+			return dynamicWrapperCommand(token, args.slice(index + 1));
+		}
+		if (token.text === "--") {
+			index += 1;
+			break;
+		}
+		if (valueOptions.has(token.text)) {
+			index += 2;
+			continue;
+		}
+		if (
+			token.text.startsWith("--kill-after=") ||
+			token.text.startsWith("--signal=")
+		) {
+			index += 1;
+			continue;
+		}
+		if (token.text.startsWith("-") && token.text !== "-") {
+			index += 1;
+			continue;
+		}
+		break;
+	}
+
+	if (index < args.length) {
+		index += 1;
+	}
+
+	const command = args[index];
+	if (!command) {
+		return null;
+	}
+
+	return {
+		command,
+		args: args.slice(index + 1),
+		assignments: [],
+	};
+}
+
+function unwrapNice(args: WordToken[]): UnwrappedCommand | null {
+	let index = 0;
+
+	while (index < args.length) {
+		const token = args[index];
+		if (!token) {
+			break;
+		}
+		if (!token.literal) {
+			return dynamicWrapperCommand(token, args.slice(index + 1));
+		}
+		if (token.text === "--") {
+			index += 1;
+			break;
+		}
+		if (token.text === "-n" || token.text === "--adjustment") {
+			index += 2;
+			continue;
+		}
+		if (
+			token.text.startsWith("--adjustment=") ||
+			/^-\d+$/.test(token.text) ||
+			/^-n.+/.test(token.text)
+		) {
+			index += 1;
+			continue;
+		}
+		if (token.text.startsWith("-") && token.text !== "-") {
+			index += 1;
+			continue;
+		}
+		break;
+	}
+
+	const command = args[index];
+	if (!command) {
+		return null;
+	}
+
+	return {
+		command,
+		args: args.slice(index + 1),
+		assignments: [],
+	};
+}
+
+function unwrapArch(args: WordToken[]): UnwrappedCommand | null {
+	let index = 0;
+
+	while (index < args.length) {
+		const token = args[index];
+		if (!token) {
+			break;
+		}
+		if (!token.literal) {
+			return dynamicWrapperCommand(token, args.slice(index + 1));
+		}
+		if (token.text === "--") {
+			index += 1;
+			break;
+		}
+		if (token.text.startsWith("-") && token.text !== "-") {
+			index += 1;
+			continue;
+		}
+		break;
+	}
+
+	const command = args[index];
+	if (!command) {
+		return null;
+	}
+
+	return {
+		command,
+		args: args.slice(index + 1),
+		assignments: [],
+	};
+}
+
 function commandWrapperIsQueryMode(args: WordToken[]): boolean {
 	for (const arg of args) {
 		if (!arg.literal) {
@@ -1111,6 +1395,8 @@ function unwrapLayer(
 	}
 
 	switch (commandBaseName(command.text)) {
+		case "arch":
+			return unwrapArch(args);
 		case "builtin":
 		case "nohup":
 			return unwrapSimpleWrapper(args);
@@ -1122,6 +1408,12 @@ function unwrapLayer(
 			return unwrapEnv(args);
 		case "exec":
 			return unwrapExec(args);
+		case "nice":
+			return unwrapNice(args);
+		case "sudo":
+			return unwrapSudo(args);
+		case "timeout":
+			return unwrapTimeout(args);
 		default:
 			return null;
 	}
@@ -1572,6 +1864,154 @@ function validateGhInvocation(
 	return null;
 }
 
+function markPriorNonGhCommand(
+	state: TraversalState,
+	command?: UnwrappedCommand,
+): void {
+	state.priorCommand = true;
+	state.priorNonGhCommand = true;
+	if (command && isStateChangingCommand(command)) {
+		state.priorStateChange = true;
+	}
+}
+
+function isStateChangingCommand(command: UnwrappedCommand): boolean {
+	const baseName = commandBaseName(command.command.text);
+	return (
+		baseName === "cd" ||
+		baseName === "pushd" ||
+		baseName === "popd" ||
+		baseName === "export" ||
+		baseName === "unset" ||
+		baseName === "set" ||
+		baseName === "declare" ||
+		baseName === "typeset" ||
+		baseName === "readonly"
+	);
+}
+
+function shellPrefixForInvocation(
+	state: TraversalState,
+): GhInvocation["shellPrefix"] {
+	if (
+		!state.priorCommand &&
+		!state.priorNonGhCommand &&
+		!state.priorStateChange
+	) {
+		return undefined;
+	}
+	return {
+		...(state.priorCommand ? { priorCommand: true as const } : {}),
+		...(state.priorNonGhCommand ? { nonGhCommand: true as const } : {}),
+		...(state.priorStateChange ? { stateChange: true as const } : {}),
+	};
+}
+
+function wrapperArgsMayRunGh(args: readonly WordToken[]): boolean {
+	return args.some(
+		(arg) =>
+			!arg.literal ||
+			commandBaseName(arg.text) === "gh" ||
+			containsGhCommandWord(arg.text),
+	);
+}
+
+function sudoCommandMayRunGh(
+	command: WordToken,
+	args: readonly WordToken[],
+): boolean {
+	if (!command.literal) {
+		return true;
+	}
+	return (
+		commandBaseName(command.text) === "gh" ||
+		args.some((arg) => arg.literal && containsGhCommandWord(arg.text))
+	);
+}
+
+function commandExecutorAmbiguityReason(
+	command: UnwrappedCommand,
+	stdinReason: string | null,
+): string | null {
+	const baseName = commandBaseName(command.command.text);
+	if (
+		baseName !== "xargs" &&
+		baseName !== "parallel" &&
+		baseName !== "find"
+	) {
+		return null;
+	}
+
+	if (wrapperArgsMayRunGh(command.args)) {
+		return "command executor can run gh without reviewable literal arguments";
+	}
+
+	if (
+		baseName === "xargs" &&
+		xargsUsesPlaceholderCommand(command.args)
+	) {
+		return "xargs placeholder commands can synthesize gh from opaque input";
+	}
+
+	if (
+		(baseName === "xargs" || baseName === "parallel") &&
+		executorUsesShellCommandTemplate(command.args)
+	) {
+		return `${baseName} shell command templates can synthesize gh from stdin or placeholders`;
+	}
+
+	if (baseName === "xargs" && stdinReason) {
+		return "xargs reads opaque stdin before command execution";
+	}
+
+	return null;
+}
+
+function xargsUsesPlaceholderCommand(
+	args: readonly WordToken[],
+): boolean {
+	return args.some(
+		(arg) =>
+			!arg.literal ||
+			arg.text === "{}" ||
+			arg.text.includes("{}") ||
+			arg.text === "-I" ||
+			arg.text.startsWith("-I"),
+	);
+}
+
+function executorUsesShellCommandTemplate(
+	args: readonly WordToken[],
+): boolean {
+	for (let index = 0; index < args.length; index += 1) {
+		const arg = args[index];
+		if (!arg?.literal) {
+			return true;
+		}
+		const baseName = commandBaseName(arg.text);
+		if (
+			baseName !== "sh" &&
+			baseName !== "bash" &&
+			baseName !== "zsh"
+		) {
+			continue;
+		}
+		for (let nested = index + 1; nested < args.length; nested += 1) {
+			const nestedArg = args[nested];
+			if (!nestedArg?.literal) {
+				return true;
+			}
+			if (nestedArg.text === "--") {
+				return false;
+			}
+			if (shellArgUsesCommandStringOption(nestedArg)) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
 function visitSimpleCommand(
 	commandNode: unknown,
 	pipelineIndex: number,
@@ -1597,7 +2037,20 @@ function visitSimpleCommand(
 		return;
 	}
 
+	const assignmentTokens = assignmentsToTokens(node.assignments);
+	const redirections = [
+		...context.inheritedRedirections,
+		...redirectionsToTokens(node.redirections),
+	];
+
 	if (!node.name) {
+		if (assignmentTokens.length > 0 || redirections.length > 0) {
+			state.priorCommand = true;
+			state.priorNonGhCommand = true;
+			if (assignmentTokens.length > 0) {
+				state.priorStateChange = true;
+			}
+		}
 		return;
 	}
 
@@ -1613,7 +2066,6 @@ function visitSimpleCommand(
 		return;
 	}
 
-	const assignmentTokens = assignmentsToTokens(node.assignments);
 	const assignments: string[] = [];
 	for (const assignment of assignmentTokens) {
 		if (!assignment.literal) {
@@ -1640,17 +2092,14 @@ function visitSimpleCommand(
 		return;
 	}
 
-	const redirections = [
-		...context.inheritedRedirections,
-		...redirectionsToTokens(node.redirections),
-	];
+	const stdinReason = opaqueStdinReason(
+		redirections,
+		pipelineIndex,
+		context.inheritedPipelineStdin,
+	);
 	const shellFormReason = commandExecutingShellFormReason(
 		effective,
-		opaqueStdinReason(
-			redirections,
-			pipelineIndex,
-			context.inheritedPipelineStdin,
-		),
+		stdinReason,
 	);
 	if (shellFormReason) {
 		state.ambiguous = ambiguous(shellFormReason);
@@ -1658,6 +2107,15 @@ function visitSimpleCommand(
 	}
 
 	if (commandBaseName(effective.command.text) !== "gh") {
+		const executorReason = commandExecutorAmbiguityReason(
+			effective,
+			stdinReason,
+		);
+		if (executorReason) {
+			state.ambiguous = ambiguous(executorReason);
+			return;
+		}
+		markPriorNonGhCommand(state, effective);
 		return;
 	}
 
@@ -1681,13 +2139,16 @@ function visitSimpleCommand(
 		return;
 	}
 
+	const shellPrefix = shellPrefixForInvocation(state);
 	state.invocations.push({
 		assignments: effective.assignments,
 		argv: [
 			effective.command.text,
 			...effective.args.map((arg) => arg.text),
 		],
+		...(shellPrefix ? { shellPrefix } : {}),
 	});
+	state.priorCommand = true;
 }
 
 function visitCommandNode(
@@ -1760,7 +2221,12 @@ function visitCommandNode(
 }
 
 function analyzeAst(ast: unknown): ExtractionResult {
-	const state: TraversalState = { invocations: [] };
+	const state: TraversalState = {
+		invocations: [],
+		priorCommand: false,
+		priorNonGhCommand: false,
+		priorStateChange: false,
+	};
 	const emptyContext: TraversalContext = {
 		inheritedRedirections: [],
 		inheritedPipelineStdin: false,

@@ -41,6 +41,8 @@ type ExecCall = {
 
 const REQUIRED_AST_IDS = [
 	"single gh",
+	"executor wrappers",
+	"command executors",
 	"multiple gh with &&",
 	"multiple gh with ;",
 	"non-gh bash",
@@ -54,6 +56,8 @@ const REQUIRED_CLASSIFICATION_IDS = [
 	"read-only issue",
 	"read-only PR diff",
 	"issue comment",
+	"host-qualified repo target",
+	"host override",
 	"issue edit",
 	"PR create",
 	"PR close",
@@ -108,6 +112,8 @@ const REQUIRED_APPROVAL_IDS = [
 	"changed body file path",
 	"same body path changed contents",
 	"unreadable body file",
+	"short body file flag",
+	"release asset file",
 	"identical ordered batch retry",
 	"reordered batch",
 	"subset batch",
@@ -119,6 +125,8 @@ const REQUIRED_NO_UI_PROMPT_IDS = [
 	"UI approval prompt",
 	"UI denial",
 	"UI all-or-none approval",
+	"stateful prefix implicit target",
+	"file payload shell prefix",
 ] as const;
 
 function fixture<Id extends string>(
@@ -459,6 +467,34 @@ const astExtractionFixtures = [
 			["gh", "issue", "comment", "1", "--body-file", ".tmp/body.md"],
 		]),
 	),
+	fixture("executor wrappers", () => {
+		for (const command of [
+			"timeout 10 gh issue comment 1 --body x",
+			"nice gh issue comment 1 --body x",
+			"arch -arm64 gh issue comment 1 --body x",
+		]) {
+			assertExtracts(command, [
+				["gh", "issue", "comment", "1", "--body", "x"],
+			]);
+		}
+	}),
+	fixture("command executors", () => {
+		for (const command of [
+			'printf "1 --body pwn" | xargs gh issue comment',
+			"printf 'gh issue comment 1 -R o/r --body x' | xargs -I{} sh -c '{}'",
+			"xargs -a cmds.txt -I{} {} issue comment 1 --body x",
+			"xargs sh -c 'gh issue comment 1 -R o/r --body x'",
+			"parallel gh issue comment ::: 1 --body x",
+			"parallel 'gh issue comment 1 -R o/r --body x' ::: a",
+			"find . -exec gh issue comment 1 --body x ;",
+			"find . -exec sh -c 'gh issue comment 1 -R o/r --body x' ;",
+			"sudo gh issue comment 1 --body x",
+			"sudo GH_REPO=o/r gh issue comment 1 --body x",
+			"sudo -D /tmp gh issue comment 1 --body x",
+		]) {
+			assertAmbiguous(command, /executor|gh/i);
+		}
+	}),
 	fixture("multiple gh with &&", () =>
 		assertExtracts(
 			"gh issue comment 1 --body-file a.md && gh pr review 2 --approve",
@@ -527,6 +563,22 @@ const classificationFixtures = [
 		"write",
 		"issue.comment",
 	),
+	classificationCase(
+		"host-qualified repo target",
+		"gh issue comment 1 -R github.com/o/r --body x",
+		"ambiguous",
+	),
+	fixture("host override", () => {
+		const classification = classifyGhInvocation({
+			assignments: ["GH_HOST=github.example.com"],
+			argv: ["gh", "issue", "comment", "1", "-R", "o/r"],
+		});
+		assert.equal(classification.kind, "ambiguous");
+		assert.match(
+			(classification as { reason: string }).reason,
+			/GH_HOST|hostname/i,
+		);
+	}),
 	classificationCase(
 		"issue edit",
 		"gh issue edit 1 -R o/r --add-label bug",
@@ -1034,6 +1086,25 @@ const approvalSignatureFixtures = [
 		assert.match(result.reason, /a\.md/);
 		assert.match(result.guidance, /reviewable local file/i);
 	}),
+	fixture("short body file flag", async () => {
+		const payload = await payloadFor(
+			writeClassification("gh issue comment 1 -R o/r -F a.md"),
+			{ "a.md": "body" },
+		);
+		assert.equal(payload.parts[0]?.kind, "file");
+		assert.equal(payload.parts[0]?.path, "a.md");
+	}),
+	fixture("release asset file", async () => {
+		const first = await singleSignature(
+			"gh release create v1.0 dist/app.tar.gz -R o/r",
+			{ "dist/app.tar.gz": "first" },
+		);
+		const second = await singleSignature(
+			"gh release create v1.0 dist/app.tar.gz -R o/r",
+			{ "dist/app.tar.gz": "second" },
+		);
+		assert.notEqual(first.digest, second.digest);
+	}),
 	fixture("identical ordered batch retry", async () => {
 		const store = createApprovalSignatureStore();
 		const first = await approvalWrite(
@@ -1190,6 +1261,61 @@ const noUiPromptFixtures = [
 			undefined,
 		);
 		assert.equal(harness.uiCalls.length, 1);
+	}),
+	fixture("stateful prefix implicit target", async () => {
+		const harness = createHarness({
+			exec: fakeHarnessExec({ "o/r": metadata("o/r") }),
+			readFile: async () => "body",
+		});
+		const result = await harness.runToolCall(
+			bashToolCall("cd ../public && gh issue comment 1 --body x"),
+		);
+		assert.equal(result?.block, true);
+		assert.match(result?.reason ?? "", /cwd|environment/i);
+		assert.equal(harness.execCalls.length, 0);
+
+		const implicit = createHarness({
+			exec: fakeHarnessExec({ "o/r": metadata("o/r") }),
+			readFile: async () => "body",
+		});
+		const implicitResult = await implicit.runToolCall(
+			bashToolCall(
+				"git remote set-url origin https://github.com/other/repo.git; gh issue comment 1 --body x",
+			),
+		);
+		assert.equal(implicitResult?.block, true);
+		assert.match(
+			implicitResult?.reason ?? "",
+			/implicit-target|repository configuration/i,
+		);
+		assert.equal(implicit.execCalls.length, 0);
+	}),
+	fixture("file payload shell prefix", async () => {
+		const harness = createHarness({
+			exec: fakeHarnessExec({ "o/r": metadata("o/r") }),
+			readFile: async () => "body",
+		});
+		const result = await harness.runToolCall(
+			bashToolCall(
+				"printf malicious > body.md; gh issue comment 1 -R o/r --body-file body.md",
+			),
+		);
+		assert.equal(result?.block, true);
+		assert.match(result?.reason ?? "", /file-backed payloads/i);
+		assert.equal(harness.fileReadCalls.length, 0);
+
+		const afterGh = createHarness({
+			exec: fakeHarnessExec({ "o/r": metadata("o/r") }),
+			readFile: async () => "body",
+		});
+		const afterGhResult = await afterGh.runToolCall(
+			bashToolCall(
+				"gh pr checkout 1 && gh issue comment 1 -R o/r --body-file body.md",
+			),
+		);
+		assert.equal(afterGhResult?.block, true);
+		assert.match(afterGhResult?.reason ?? "", /standalone `gh`/i);
+		assert.equal(afterGh.fileReadCalls.length, 0);
 	}),
 ] satisfies readonly Fixture<
 	(typeof REQUIRED_NO_UI_PROMPT_IDS)[number]

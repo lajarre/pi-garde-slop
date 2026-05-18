@@ -493,3 +493,58 @@ test("keeps leading assignments and unwraps literal simple wrappers", () => {
 		},
 	]);
 });
+
+test("unwraps literal executor wrappers before gh", () => {
+	const cases: Array<[string, string[]]> = [
+		[
+			"timeout 10 gh issue comment 1 --body x",
+			["gh", "issue", "comment", "1", "--body", "x"],
+		],
+		[
+			"nice gh issue comment 1 --body x",
+			["gh", "issue", "comment", "1", "--body", "x"],
+		],
+		[
+			"arch -arm64 gh issue comment 1 --body x",
+			["gh", "issue", "comment", "1", "--body", "x"],
+		],
+	];
+
+	for (const [command, argv] of cases) {
+		assertReviewable(command, [argv]);
+	}
+});
+
+test("blocks sudo gh execution because wrapper state is not modeled", () => {
+	for (const command of [
+		"sudo gh issue comment 1 --body x",
+		"sudo GH_REPO=o/r gh issue comment 1 --body x",
+	]) {
+		assertAmbiguous(command, "sudo|gh");
+	}
+});
+
+test("blocks command executors that can run gh", () => {
+	for (const command of [
+		'printf "1 --body pwn" | xargs gh issue comment',
+		"printf 'gh issue comment 1 -R o/r --body x' | xargs -I{} sh -c '{}'",
+		"xargs -a cmds.txt -I{} {} issue comment 1 --body x",
+		"xargs sh -c 'gh issue comment 1 -R o/r --body x'",
+		"parallel gh issue comment ::: 1 --body x",
+		"parallel 'gh issue comment 1 -R o/r --body x' ::: a",
+		"find . -exec gh issue comment 1 --body x ;",
+		"find . -exec sh -c 'gh issue comment 1 -R o/r --body x' ;",
+	]) {
+		assertAmbiguous(command, "executor|gh");
+	}
+});
+
+test("blocks sudo cwd and environment preserving options before gh", () => {
+	for (const command of [
+		"sudo -D /tmp gh issue comment 1 --body x",
+		"sudo --chdir=/tmp gh issue comment 1 --body x",
+		"sudo -E gh issue comment 1 --body x",
+	]) {
+		assertAmbiguous(command, "sudo|environment|cwd|option");
+	}
+});

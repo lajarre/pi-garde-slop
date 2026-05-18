@@ -1,6 +1,13 @@
 export interface GhInvocation {
 	assignments: string[];
 	argv: string[];
+	shellPrefix?: GhInvocationShellPrefix;
+}
+
+export interface GhInvocationShellPrefix {
+	nonGhCommand?: true;
+	priorCommand?: true;
+	stateChange?: true;
 }
 
 export interface ReviewableExtractionResult {

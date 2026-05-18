@@ -80,6 +80,9 @@ export function classifyGhInvocation(
 ): GhClassification {
 	const base = classificationBase(invocation);
 	const [commandWord, group, subcommand] = invocation.argv;
+	const hostOverrideReason = unsupportedHostOverrideReason(invocation);
+	const repoTargetReason =
+		unsupportedExplicitRepoTargetReason(invocation);
 
 	if (!commandWord || commandBaseName(commandWord) !== "gh") {
 		return ambiguous(base, "invocation command word is not gh");
@@ -112,6 +115,12 @@ export function classifyGhInvocation(
 		);
 	}
 	if (hasWord(command.write, subcommand)) {
+		if (hostOverrideReason) {
+			return ambiguous(base, hostOverrideReason);
+		}
+		if (repoTargetReason) {
+			return ambiguous(base, repoTargetReason);
+		}
 		if (
 			isOrgOrUserScopedSecretVariableSet(
 				group,
@@ -144,6 +153,9 @@ function classifyApiInvocation(
 	base: GhClassificationBase,
 ): GhClassification {
 	const info = apiInfo(invocation.argv);
+	const hostOverrideReason = unsupportedHostOverrideReason(invocation);
+	const repoTargetReason =
+		unsupportedExplicitRepoTargetReason(invocation);
 	const endpoint = info.endpoint?.replace(/^\/+/, "") ?? "";
 	const isGraphqlEndpoint = endpoint === "graphql";
 	const hasGraphqlMutation =
@@ -198,6 +210,12 @@ function classifyApiInvocation(
 
 	const writeClass = apiWriteClass(effectiveMethod);
 	const validationAdvice = adviceForWrite(writeClass, invocation.argv);
+	if (hostOverrideReason) {
+		return ambiguous(base, hostOverrideReason);
+	}
+	if (repoTargetReason) {
+		return ambiguous(base, repoTargetReason);
+	}
 	if (!base.targetHints.some((hint) => hint.source === "restPath")) {
 		return unsupportedWrite(
 			base,
@@ -335,6 +353,65 @@ function assignmentValue(
 		: null;
 }
 
+function unsupportedHostOverrideReason(
+	invocation: GhInvocation,
+): string | null {
+	if (
+		invocation.assignments.some((assignment) =>
+			assignment.startsWith("GH_HOST="),
+		)
+	) {
+		return "GH_HOST host overrides are not modeled by the approval gate";
+	}
+	if (hasHostnameFlag(invocation.argv)) {
+		return "--hostname host overrides are not modeled by the approval gate";
+	}
+	return null;
+}
+
+function hasHostnameFlag(argv: readonly string[]): boolean {
+	for (let index = 0; index < argv.length; index += 1) {
+		const token = argv[index] ?? "";
+		if (token === "--hostname" || token.startsWith("--hostname=")) {
+			return true;
+		}
+	}
+	return false;
+}
+
+function unsupportedExplicitRepoTargetReason(
+	invocation: GhInvocation,
+): string | null {
+	for (const assignment of invocation.assignments) {
+		if (assignment.startsWith("GH_REPO=")) {
+			const repo = assignment.slice("GH_REPO=".length);
+			if (!isRepoName(repo)) {
+				return unsupportedRepoTargetMessage("GH_REPO", repo);
+			}
+		}
+	}
+
+	for (const repo of repoFlagValues(invocation.argv)) {
+		if (!isRepoName(repo)) {
+			return unsupportedRepoTargetMessage("repo flag", repo);
+		}
+	}
+
+	const positional = positionalRepoCandidate(invocation.argv);
+	if (positional && !isRepoName(positional)) {
+		return unsupportedRepoTargetMessage("positional repo", positional);
+	}
+
+	return null;
+}
+
+function unsupportedRepoTargetMessage(
+	source: string,
+	repo: string,
+): string {
+	return `unsupported ${source} target ${repo || "<missing>"}; use owner/repo without a host-qualified prefix`;
+}
+
 function addHint(
 	hints: GhTargetHint[],
 	source: GhTargetHintSource,
@@ -400,8 +477,15 @@ function hasLongOptionFlag(
 }
 
 function positionalRepoTarget(argv: string[]): string | null {
-	const candidate = argv[1] === "repo" ? argv[3] : null;
+	const candidate = positionalRepoCandidate(argv);
 	return candidate && isRepoName(candidate) ? candidate : null;
+}
+
+function positionalRepoCandidate(
+	argv: readonly string[],
+): string | null {
+	const candidate = argv[1] === "repo" ? (argv[3] ?? null) : null;
+	return candidate && !candidate.startsWith("-") ? candidate : null;
 }
 
 function restPathRepoTarget(
@@ -576,7 +660,8 @@ function adviceForWrite(
 function usesInlineBody(argv: readonly string[]): boolean {
 	return (
 		argv.includes("--body") ||
-		argv.some((arg) => arg.startsWith("--body="))
+		argv.includes("-b") ||
+		argv.some((arg) => arg.startsWith("--body=") || /^-b.+/.test(arg))
 	);
 }
 

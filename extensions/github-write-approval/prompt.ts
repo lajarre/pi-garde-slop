@@ -5,6 +5,13 @@ import type {
 } from "./types.ts";
 
 const REDACTED_INLINE_PAYLOAD = "[redacted inline payload]";
+const BODY_WRITE_CLASSES = new Set<GhWriteClass>([
+	"issue.comment",
+	"issue.create",
+	"pr.comment",
+	"pr.create",
+	"pr.review",
+]);
 const VALUE_TAKING_FLAGS = new Set([
 	"--add-label",
 	"--base",
@@ -22,17 +29,11 @@ const VALUE_TAKING_FLAGS = new Set([
 	"--raw-field",
 	"--repo",
 	"--title",
+	"-b",
 	"-F",
+	"-n",
 	"-R",
 	"-X",
-	"-f",
-]);
-const INLINE_PAYLOAD_FLAGS = new Set([
-	"--body",
-	"--notes",
-	"--field",
-	"--raw-field",
-	"-F",
 	"-f",
 ]);
 
@@ -98,12 +99,12 @@ function validationAdvice(write: ApprovalPromptWrite): string[] {
 	const advice = [...write.classification.validationAdvice];
 	const argv = write.classification.signatureInput.argv;
 
-	if (hasFlag(argv, "--body-file")) {
+	if (hasBodyFileFlag(write.classification.writeClass, argv)) {
 		advice.push(
 			"For --body-file, review the referenced local file contents and compare them with the payload digest.",
 		);
 	}
-	if (hasFlag(argv, "--notes-file")) {
+	if (hasNotesFileFlag(write.classification.writeClass, argv)) {
 		advice.push(
 			"For --notes-file, review the release notes file contents and compare them with the payload digest.",
 		);
@@ -128,26 +129,36 @@ function validationAdvice(write: ApprovalPromptWrite): string[] {
 function displaySafeCommand(write: ApprovalPromptWrite): string {
 	const tokens = [
 		...write.classification.signatureInput.assignments,
-		...redactedArgv(write.classification.signatureInput.argv),
+		...redactedArgv(
+			write.classification.writeClass,
+			write.classification.signatureInput.argv,
+		),
 	];
 	return tokens.map(shellQuote).join(" ");
 }
 
-function redactedArgv(argv: readonly string[]): string[] {
+function redactedArgv(
+	writeClass: GhWriteClass,
+	argv: readonly string[],
+): string[] {
+	const inlinePayloadFlags = inlinePayloadFlagsForWrite(writeClass);
 	const result: string[] = [];
 	for (let index = 0; index < argv.length; index += 1) {
 		const token = argv[index] ?? "";
-		const shortPayload = concatenatedShortPayloadFlag(token);
+		const shortPayload = concatenatedShortPayloadFlag(
+			token,
+			inlinePayloadFlags,
+		);
 		if (shortPayload) {
 			result.push(shortPayload.flag, REDACTED_INLINE_PAYLOAD);
 			continue;
 		}
-		const equalsPayload = equalsPayloadFlag(token);
+		const equalsPayload = equalsPayloadFlag(token, inlinePayloadFlags);
 		if (equalsPayload) {
 			result.push(`${equalsPayload.flag}=${REDACTED_INLINE_PAYLOAD}`);
 			continue;
 		}
-		if (INLINE_PAYLOAD_FLAGS.has(token) && token !== "--input") {
+		if (inlinePayloadFlags.has(token) && token !== "--input") {
 			result.push(token, REDACTED_INLINE_PAYLOAD);
 			index += 1;
 			continue;
@@ -157,8 +168,26 @@ function redactedArgv(argv: readonly string[]): string[] {
 	return result;
 }
 
-function equalsPayloadFlag(token: string): { flag: string } | null {
-	for (const flag of INLINE_PAYLOAD_FLAGS) {
+function inlinePayloadFlagsForWrite(
+	writeClass: GhWriteClass,
+): Set<string> {
+	if (writeClass.startsWith("api.")) {
+		return new Set(["--field", "--raw-field", "-F", "-f"]);
+	}
+	if (BODY_WRITE_CLASSES.has(writeClass)) {
+		return new Set(["--body", "-b"]);
+	}
+	if (writeClass === "release.create") {
+		return new Set(["--notes", "-n"]);
+	}
+	return new Set(["--body", "--notes"]);
+}
+
+function equalsPayloadFlag(
+	token: string,
+	inlinePayloadFlags: ReadonlySet<string>,
+): { flag: string } | null {
+	for (const flag of inlinePayloadFlags) {
 		const prefix = `${flag}=`;
 		if (token.startsWith(prefix)) {
 			return { flag };
@@ -169,8 +198,12 @@ function equalsPayloadFlag(token: string): { flag: string } | null {
 
 function concatenatedShortPayloadFlag(
 	token: string,
+	inlinePayloadFlags: ReadonlySet<string>,
 ): { flag: string } | null {
-	for (const flag of ["-F", "-f"]) {
+	for (const flag of ["-F", "-f", "-b", "-n"]) {
+		if (!inlinePayloadFlags.has(flag)) {
+			continue;
+		}
 		if (token.startsWith(flag) && token.length > flag.length) {
 			return { flag };
 		}
@@ -240,10 +273,38 @@ function flagConsumesNext(token: string): boolean {
 	return VALUE_TAKING_FLAGS.has(token);
 }
 
+function hasBodyFileFlag(
+	writeClass: GhWriteClass,
+	argv: readonly string[],
+): boolean {
+	return (
+		hasFlag(argv, "--body-file") ||
+		(BODY_WRITE_CLASSES.has(writeClass) && hasShortFlag(argv, "-F"))
+	);
+}
+
+function hasNotesFileFlag(
+	writeClass: GhWriteClass,
+	argv: readonly string[],
+): boolean {
+	return (
+		hasFlag(argv, "--notes-file") ||
+		(writeClass === "release.create" && hasShortFlag(argv, "-F"))
+	);
+}
+
 function hasFlag(argv: readonly string[], flag: string): boolean {
 	return (
 		argv.includes(flag) ||
 		argv.some((token) => token.startsWith(`${flag}=`))
+	);
+}
+
+function hasShortFlag(argv: readonly string[], flag: string): boolean {
+	return argv.some(
+		(token) =>
+			token === flag ||
+			(token.startsWith(flag) && token.length > flag.length),
 	);
 }
 

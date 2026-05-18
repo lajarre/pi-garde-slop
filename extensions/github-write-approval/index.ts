@@ -13,7 +13,10 @@ import {
 } from "./approval.ts";
 import { extractGhInvocations } from "./ast.ts";
 import { classifyGhInvocation } from "./classify.ts";
-import { resolvePayloadIdentity } from "./payload.ts";
+import {
+	hasFilePayloadReferences,
+	resolvePayloadIdentity,
+} from "./payload.ts";
 import { evaluateBatchPolicy } from "./policy.ts";
 import { formatApprovalPrompt } from "./prompt.ts";
 import {
@@ -24,6 +27,7 @@ import {
 } from "./repo.ts";
 import type {
 	GhClassification,
+	GhInvocation,
 	PayloadFileReader,
 	PayloadFileReadResult,
 	PolicyDecision,
@@ -92,6 +96,7 @@ async function evaluateBashToolCall(
 	for (const invocation of extraction.invocations) {
 		const classification = classifyGhInvocation(invocation);
 		const input = await policyInputForClassification(
+			invocation,
 			classification,
 			ctx,
 			state,
@@ -110,12 +115,21 @@ async function evaluateBashToolCall(
 }
 
 async function policyInputForClassification(
+	invocation: GhInvocation,
 	classification: GhClassification,
 	ctx: ExtensionContext,
 	state: EvaluationState,
 ): Promise<PolicyEvaluationInput | ToolCallBlockResult> {
 	if (classification.kind !== "write") {
 		return { classification };
+	}
+
+	const prefixBlock = shellPrefixSafetyBlock(
+		invocation,
+		classification,
+	);
+	if (prefixBlock) {
+		return prefixBlock;
 	}
 
 	const exec = state.pi.exec;
@@ -150,6 +164,41 @@ async function policyInputForClassification(
 		repoResolution,
 		target: repoResolution.target,
 	};
+}
+
+function shellPrefixSafetyBlock(
+	invocation: GhInvocation,
+	classification: GhClassification & { kind: "write" },
+): ToolCallBlockResult | null {
+	if (!invocation.shellPrefix) {
+		return null;
+	}
+
+	if (
+		invocation.shellPrefix.priorCommand &&
+		hasFilePayloadReferences(classification)
+	) {
+		return block(
+			"GitHub write blocked because file-backed payloads must use a standalone `gh` command. A preceding command can change the file after approval but before `gh` reads it.\n\nRewrite as a standalone `gh ... --body-file .tmp/body.md` / `gh release create ... <asset>` command after preparing files in a separate step.",
+		);
+	}
+
+	if (invocation.shellPrefix.stateChange) {
+		return block(
+			"GitHub write blocked because a preceding shell command can change cwd or GitHub environment before `gh` runs.\n\nRun the `gh` command standalone from the intended repository, with same-invocation target flags such as `-R owner/repo`.",
+		);
+	}
+
+	if (
+		invocation.shellPrefix.priorCommand &&
+		classification.targetHints.length === 0
+	) {
+		return block(
+			"GitHub write blocked because a preceding shell command can change repository configuration before an implicit-target `gh` write.\n\nAdd an explicit same-invocation repo target such as `-R owner/repo`, or run the `gh` command standalone.",
+		);
+	}
+
+	return null;
 }
 
 async function resultForPolicyDecision(

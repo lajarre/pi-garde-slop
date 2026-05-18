@@ -14,6 +14,7 @@ import type {
 	RepoResolutionResult,
 	ResolvedRepoTarget,
 } from "../extensions/github-write-approval/types.ts";
+import { bashToolCall, createHarness } from "./support/harness.ts";
 
 function invocation(argv: string[]): GhInvocation {
 	return { assignments: [], argv };
@@ -67,6 +68,36 @@ function resolvedRepo(
 		kind: "resolved",
 		metadata: repo,
 		target: target(repo.nameWithOwner),
+	};
+}
+
+function fakeHarnessExec(metadataByRepo: Record<string, RepoMetadata>) {
+	return async (command: string, args: string[]) => {
+		if (command === "gh" && args[0] === "repo" && args[1] === "view") {
+			const repo = args[2] ?? "";
+			const repoMetadata = metadataByRepo[repo];
+			return repoMetadata
+				? {
+						exitCode: 0,
+						stderr: "",
+						stdout: JSON.stringify(repoMetadata),
+					}
+				: { exitCode: 1, stderr: `missing ${repo}`, stdout: "" };
+		}
+		if (
+			command === "git" &&
+			args[0] === "remote" &&
+			args[1] === "get-url"
+		) {
+			return {
+				exitCode: 0,
+				stderr: "",
+				stdout: "https://github.com/o/r.git",
+			};
+		}
+		throw new Error(
+			`unexpected exec call: ${command} ${args.join(" ")}`,
+		);
 	};
 }
 
@@ -286,6 +317,161 @@ test("blocks unsupported, repo-less, unresolved, and not-yet-existing writes", (
 	);
 	assert.equal(missingRepo.kind, "block");
 	assert.match(missingRepo.reason, /existing repository/i);
+});
+
+test("blocks host-qualified explicit repo targets instead of falling back to cwd", () => {
+	for (const classification of [
+		classify([
+			"gh",
+			"issue",
+			"comment",
+			"1",
+			"-R",
+			"github.com/o/r",
+			"--body",
+			"x",
+		]),
+		classifyGhInvocation({
+			assignments: ["GH_REPO=github.com/o/r"],
+			argv: ["gh", "issue", "comment", "1", "--body", "x"],
+		}),
+		classifyGhInvocation({
+			assignments: ["GH_HOST=github.example.com"],
+			argv: ["gh", "issue", "comment", "1", "-R", "o/r", "--body", "x"],
+		}),
+		classify([
+			"gh",
+			"api",
+			"--hostname",
+			"github.example.com",
+			"repos/o/r/issues",
+			"-X",
+			"POST",
+			"--input",
+			"payload.json",
+		]),
+	]) {
+		assert.equal(classification.kind, "ambiguous");
+		assert.match(
+			(classification as { reason: string }).reason,
+			/host-qualified|owner\/repo|GH_HOST|hostname/i,
+		);
+	}
+});
+
+test("blocks prior shell state before implicit-target writes", async () => {
+	for (const command of [
+		"cd ../public && gh issue comment 1 --body x",
+		"export GH_REPO=public/repo; gh issue comment 1 --body x",
+		"export GH_HOST=github.example.com; gh issue comment 1 -R o/r --body x",
+	]) {
+		const harness = createHarness({
+			exec: fakeHarnessExec({ "o/r": metadata("o/r") }),
+			readFile: async () => "body",
+		});
+
+		const result = await harness.runToolCall(bashToolCall(command));
+
+		assert.equal(result?.block, true, command);
+		assert.match(result?.reason ?? "", /cwd|environment/i);
+		assert.equal(harness.execCalls.length, 0);
+	}
+});
+
+test("blocks file-backed payloads after non-gh shell prefixes", async () => {
+	const harness = createHarness({
+		exec: fakeHarnessExec({ "o/r": metadata("o/r") }),
+		readFile: async () => "old body",
+	});
+
+	const result = await harness.runToolCall(
+		bashToolCall(
+			"printf malicious > .tmp/body.md; gh issue comment 1 -R o/r --body-file .tmp/body.md",
+		),
+	);
+
+	assert.equal(result?.block, true);
+	assert.match(result?.reason ?? "", /file-backed payloads/i);
+	assert.equal(harness.fileReadCalls.length, 0);
+});
+
+test("blocks prior commands before implicit-target writes", async () => {
+	const harness = createHarness({
+		exec: fakeHarnessExec({ "o/r": metadata("o/r") }),
+		readFile: async () => "body",
+	});
+
+	const result = await harness.runToolCall(
+		bashToolCall(
+			"git remote set-url origin https://github.com/other/repo.git; gh issue comment 1 --body x",
+		),
+	);
+
+	assert.equal(result?.block, true);
+	assert.match(
+		result?.reason ?? "",
+		/implicit-target|repository configuration/i,
+	);
+	assert.equal(harness.execCalls.length, 0);
+});
+
+test("blocks file-backed payloads after prior gh commands", async () => {
+	const harness = createHarness({
+		exec: fakeHarnessExec({ "o/r": metadata("o/r") }),
+		readFile: async () => "body",
+	});
+
+	const result = await harness.runToolCall(
+		bashToolCall(
+			"gh pr checkout 1 && gh issue comment 1 -R o/r --body-file body.md",
+		),
+	);
+
+	assert.equal(result?.block, true);
+	assert.match(result?.reason ?? "", /standalone `gh` command/i);
+	assert.equal(harness.fileReadCalls.length, 0);
+});
+
+test("hashes command-specific short body-file flags as files", async () => {
+	const classification = writeClassification([
+		"gh",
+		"issue",
+		"comment",
+		"1",
+		"-R",
+		"o/r",
+		"-F",
+		"body.md",
+	]);
+	const payload = await payloadFor(classification, {
+		"body.md": "file body",
+	});
+
+	assert.match(payload.displaySummary, /-F body\.md: sha256:/);
+	assert.equal(payload.parts[0]?.kind, "file");
+	assert.equal(payload.parts[0]?.path, "body.md");
+});
+
+test("binds release asset files into payload identity", async () => {
+	const classification = writeClassification([
+		"gh",
+		"release",
+		"create",
+		"v1.0",
+		"dist/app.tar.gz#linux",
+		"-R",
+		"o/r",
+	]);
+	const payload = await payloadFor(classification, {
+		"dist/app.tar.gz": "asset bytes",
+	});
+
+	assert.match(
+		payload.displaySummary,
+		/asset dist\/app\.tar\.gz: sha256:/,
+	);
+	assert.equal(payload.parts[0]?.kind, "file");
+	assert.equal(payload.parts[0]?.path, "dist/app.tar.gz");
 });
 
 test("blocks public writes without UI and includes local review guidance", async () => {
