@@ -137,6 +137,11 @@ function redactedArgv(argv: readonly string[]): string[] {
 	const result: string[] = [];
 	for (let index = 0; index < argv.length; index += 1) {
 		const token = argv[index] ?? "";
+		const shortPayload = concatenatedShortPayloadFlag(token);
+		if (shortPayload) {
+			result.push(shortPayload.flag, REDACTED_INLINE_PAYLOAD);
+			continue;
+		}
 		const equalsPayload = equalsPayloadFlag(token);
 		if (equalsPayload) {
 			result.push(`${equalsPayload.flag}=${REDACTED_INLINE_PAYLOAD}`);
@@ -156,6 +161,17 @@ function equalsPayloadFlag(token: string): { flag: string } | null {
 	for (const flag of INLINE_PAYLOAD_FLAGS) {
 		const prefix = `${flag}=`;
 		if (token.startsWith(prefix)) {
+			return { flag };
+		}
+	}
+	return null;
+}
+
+function concatenatedShortPayloadFlag(
+	token: string,
+): { flag: string } | null {
+	for (const flag of ["-F", "-f"]) {
+		if (token.startsWith(flag) && token.length > flag.length) {
 			return { flag };
 		}
 	}

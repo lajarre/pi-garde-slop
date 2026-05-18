@@ -444,3 +444,27 @@ test("redacts raw secret and inline payload values in approval prompts", async (
 	assert.match(prompt, /sha256:/);
 	assert.doesNotMatch(prompt, /super-secret-value/);
 });
+
+test("redacts concatenated gh api field values in approval prompts", async () => {
+	const write = await policyWrite(
+		["gh", "api", "repos/o/r/issues", "-fbody=inline-api-secret"],
+		metadata("o/r"),
+	);
+	const decision = evaluateBatchPolicy([write], { hasUI: true });
+
+	assert.equal(decision.kind, "prompt");
+	const prompt = formatApprovalPrompt(
+		decision.publicWrites,
+		decision.signature,
+	);
+
+	assert.match(
+		prompt,
+		/Command: gh api repos\/o\/r\/issues -f \[redacted inline payload\]/,
+	);
+	assert.match(
+		prompt,
+		/Payload: -f: \[redacted inline payload\], sha256:/,
+	);
+	assert.doesNotMatch(prompt, /inline-api-secret/);
+});
