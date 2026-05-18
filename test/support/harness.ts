@@ -131,7 +131,7 @@ export function createHarness(options: HarnessOptions = {}): Harness {
 		},
 	});
 
-	githubWriteApproval(pi);
+	githubWriteApproval(pi, { readFile: harness.readFile });
 
 	return harness;
 }
