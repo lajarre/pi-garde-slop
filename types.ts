@@ -229,3 +229,43 @@ export interface ApprovalSignatureStore {
 	has(signature: ApprovalSignature): boolean;
 	remember(signature: ApprovalSignature): void;
 }
+
+export interface PolicyEvaluationOptions {
+	hasUI: boolean;
+}
+
+export interface PolicyEvaluationInput {
+	classification: GhClassification;
+	payload?: PayloadIdentity;
+	repo?: RepoMetadata;
+	repoResolution?: RepoResolutionResult;
+	target?: ResolvedRepoTarget;
+}
+
+export interface ApprovalPromptWrite extends ApprovalWriteInput {
+	fingerprint: string;
+	publicReason: string;
+}
+
+export interface PolicyAllowDecision {
+	kind: "allow";
+	reason: string;
+}
+
+export interface PolicyBlockDecision {
+	guidance: string;
+	kind: "block";
+	reason: string;
+}
+
+export interface PolicyPromptDecision {
+	kind: "prompt";
+	publicWrites: ApprovalPromptWrite[];
+	reason: string;
+	signature: ApprovalSignature;
+}
+
+export type PolicyDecision =
+	| PolicyAllowDecision
+	| PolicyBlockDecision
+	| PolicyPromptDecision;
