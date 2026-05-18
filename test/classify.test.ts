@@ -51,12 +51,13 @@ function assertUnsupportedWrite(
 	argv: string[],
 	writeClass: string,
 	reasonIncludes: RegExp,
-): void {
+): GhClassification & { kind: "unsupportedWrite" } {
 	const result = classify(argv);
 
 	assert.equal(result.kind, "unsupportedWrite");
 	assert.equal(result.writeClass, writeClass);
 	assert.match(result.reason, reasonIncludes);
+	return result;
 }
 
 function assertAdvice(
@@ -403,6 +404,72 @@ test("marks unsupported public-external write classes explicitly", () => {
 		"api.put",
 		/non-repo-scoped/i,
 	);
+});
+
+test("marks org and user scoped secret and variable writes unsupported", () => {
+	const cases = [
+		{
+			argv: [
+				"gh",
+				"secret",
+				"set",
+				"NAME",
+				"--org",
+				"myorg",
+				"--body",
+				"value",
+			],
+			writeClass: "secret.set",
+		},
+		{
+			argv: [
+				"gh",
+				"secret",
+				"set",
+				"NAME",
+				"--user",
+				"lajarre",
+				"--body",
+				"value",
+			],
+			writeClass: "secret.set",
+		},
+		{
+			argv: [
+				"gh",
+				"variable",
+				"set",
+				"NAME",
+				"--org",
+				"myorg",
+				"--body",
+				"value",
+			],
+			writeClass: "variable.set",
+		},
+		{
+			argv: [
+				"gh",
+				"variable",
+				"set",
+				"NAME",
+				"--user",
+				"lajarre",
+				"--body",
+				"value",
+			],
+			writeClass: "variable.set",
+		},
+	] as const;
+
+	for (const item of cases) {
+		const result = assertUnsupportedWrite(
+			[...item.argv],
+			item.writeClass,
+			/org\/user-scoped.*not repo-scoped/i,
+		);
+		assert.deepEqual(result.targetHints, []);
+	}
 });
 
 test("fails closed for unknown possible writes", () => {

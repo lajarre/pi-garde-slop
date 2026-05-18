@@ -112,6 +112,20 @@ export function classifyGhInvocation(
 		);
 	}
 	if (hasWord(command.write, subcommand)) {
+		if (
+			isOrgOrUserScopedSecretVariableSet(
+				group,
+				subcommand,
+				invocation.argv,
+			)
+		) {
+			return unsupportedWrite(
+				base,
+				commandWriteClass(group, subcommand),
+				`org/user-scoped gh ${group} ${subcommand} is not repo-scoped and is not approved in v1`,
+				invocation.argv,
+			);
+		}
 		return writeClassification(
 			base,
 			commandWriteClass(group, subcommand),
@@ -361,6 +375,28 @@ function repoFlagValues(argv: string[]): string[] {
 
 function stripOptionalEquals(value: string): string {
 	return value.startsWith("=") ? value.slice(1) : value;
+}
+
+function isOrgOrUserScopedSecretVariableSet(
+	group: string,
+	subcommand: string,
+	argv: readonly string[],
+): boolean {
+	return (
+		(group === "secret" || group === "variable") &&
+		subcommand === "set" &&
+		(hasLongOptionFlag(argv, "--org") ||
+			hasLongOptionFlag(argv, "--user"))
+	);
+}
+
+function hasLongOptionFlag(
+	argv: readonly string[],
+	flag: string,
+): boolean {
+	return argv.some(
+		(token) => token === flag || token.startsWith(`${flag}=`),
+	);
 }
 
 function positionalRepoTarget(argv: string[]): string | null {
